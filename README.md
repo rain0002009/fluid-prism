@@ -16,7 +16,7 @@
 ## 安装
 
 ```bash
-npm install fluid-prism
+pnpm add fluid-prism
 ```
 
 ## 基础用法
@@ -272,12 +272,12 @@ effect.destroy();
 ## 发布
 
 ```bash
-npm install
-npm run build
-npm publish --access public
+pnpm install
+pnpm run build
+pnpm publish --access public
 ```
 
-如果该包名在 npm 上已被占用，请先修改 `package.json` 中的 `name` 再发布。
+如果该包名在 npm 仓库中已被占用，请先修改 `package.json` 中的 `name` 再发布。
 
 ## 说明
 
