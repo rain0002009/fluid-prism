@@ -21,7 +21,9 @@
   "sideEffects": false,
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",
-    "dev": "vite playground",
+    "dev": "vite --config vite.config.ts",
+    "build:playground": "vite build --config vite.config.ts",
+    "preview:playground": "vite preview --config vite.config.ts",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
