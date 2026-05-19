@@ -1,5 +1,14 @@
 # fluid-prism
 
+[![npm version](https://img.shields.io/npm/v/fluid-prism.svg)](https://www.npmjs.com/package/fluid-prism)
+[![npm downloads](https://img.shields.io/npm/dm/fluid-prism.svg)](https://www.npmjs.com/package/fluid-prism)
+[![npm package size](https://img.shields.io/bundlephobia/minzip/fluid-prism)](https://bundlephobia.com/package/fluid-prism)
+[![jsDelivr hits](https://img.shields.io/jsdelivr/npm/hm/fluid-prism)](https://www.jsdelivr.com/package/npm/fluid-prism)
+[![TypeScript](https://img.shields.io/badge/TypeScript-included-3178C6?logo=typescript&logoColor=white)](https://www.npmjs.com/package/fluid-prism)
+[![GitHub Pages](https://img.shields.io/badge/demo-live-0a7ea4)](https://rain0002009.github.io/fluid-prism/)
+[![renderers](https://img.shields.io/badge/renderers-WebGL%20%7C%20WebGPU-111111)](https://rain0002009.github.io/fluid-prism/)
+[![license](https://img.shields.io/npm/l/fluid-prism.svg)](./LICENSE)
+
 一个面向现代 Web 应用的轻量级鼠标驱动流体折射效果，支持 WebGL，并提供可选的 WebGPU 后端。
 
 它会渲染一个全屏 canvas，将鼠标光标速度存入 ping-pong 绘制缓冲区，再经过低分辨率反馈纹理处理，最后对场景纹理施加细微的位移与色散干涉效果。默认使用 WebGL；如果你显式选择 WebGPU，并且当前浏览器支持，也可以切换到 WebGPU 后端。
@@ -385,16 +394,6 @@ effect.update({ amount: 2.4 });
 effect.resize();
 effect.destroy();
 ```
-
-## 发布
-
-```bash
-pnpm install
-pnpm run build
-pnpm publish --access public
-```
-
-如果该包名在 npm 仓库中已被占用，请先修改 `package.json` 中的 `name` 再发布。
 
 ## 说明
 
