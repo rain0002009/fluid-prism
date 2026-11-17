@@ -1,4 +1,5 @@
 import { webgl, webgpu, type FluidPrism, type FluidPrismBackendKind } from '../src';
+import { createSettingsPanel } from './settings';
 
 const search = new URLSearchParams(window.location.search);
 const initialBackend = (search.get('backend') === 'webgpu' ? 'webgpu' : 'webgl') satisfies FluidPrismBackendKind;
@@ -44,7 +45,7 @@ Object.assign(controls.style, {
 document.body.appendChild(controls);
 
 const select = controls.querySelector<HTMLSelectElement>('#backend-select');
-const status = controls.querySelector<HTMLDivElement>('#backend-status');
+const status = controls.querySelector<HTMLDivElement>('#backend-status')!;
 const sceneSelect = controls.querySelector<HTMLSelectElement>('#scene-select')!;
 sceneSelect.value = search.get('scene') === 'canvas' ? 'canvas' : 'html';
 scene.hidden = sceneSelect.value !== 'html';
@@ -60,6 +61,8 @@ select.value = initialBackend;
 
 let effect: FluidPrism | null = null;
 let mountVersion = 0;
+const settingsPanel = createSettingsPanel(options => effect?.update(options));
+document.body.appendChild(settingsPanel.element);
 
 function updateStatus(message: string) {
   status.textContent = message;
@@ -100,7 +103,7 @@ async function mountEffect(backend: FluidPrismBackendKind) {
   scene.hidden = !html;
   updateStatus('Preparing the selected renderer…');
   try {
-    const options = { zIndex: 1, ...(html ? { htmlSource: scene } : { contentRenderer: renderContent }) };
+    const options = { zIndex: 1, ...settingsPanel.getOptions(), ...(html ? { htmlSource: scene } : { contentRenderer: renderContent }) };
     const instance = backend === 'webgpu' ? webgpu.createFluidPrism(options) : webgl.createFluidPrism(options);
     effect = instance;
     await instance.ready;

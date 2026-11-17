@@ -324,6 +324,65 @@ test('built playground runs on a plain static server at root and nested paths', 
   }
 });
 
+test('demo visual controls update live, persist across scenes and reset on desktop and mobile', async () => {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.goto(`${origin}/fluid-prism/`);
+    await page.getByText('WEBGL · Native HTML', { exact: false }).waitFor();
+    const panel = page.locator('#visual-settings');
+    const amount = panel.getByRole('slider', { name: /折射强度/ });
+    const dpr = panel.getByRole('slider', { name: /像素比上限/ });
+    const film = panel.getByRole('switch', { name: /粉彩油膜/ });
+    await page.getByRole('textbox', { name: 'Your name' }).fill('Keep my content');
+    await page.evaluate(() => { window.originalDemoCanvas = document.querySelector('canvas'); });
+    await amount.focus();
+    await page.keyboard.press('End');
+    assert.equal(await amount.inputValue(), '10');
+    assert.equal(await amount.locator('..').locator('output').textContent(), '10');
+    await film.uncheck();
+    assert.equal(await film.isChecked(), false);
+    await dpr.focus();
+    await page.keyboard.press('Home');
+    await page.waitForFunction(() => document.querySelector('canvas').width === innerWidth * 0.5);
+    assert.equal(await page.evaluate(() => document.querySelector('canvas') === window.originalDemoCanvas), true);
+    assert.equal(await page.getByRole('textbox').inputValue(), 'Keep my content');
+    await panel.evaluate(el => { el.scrollTop = 0; });
+    await mkdir('.scratch/validation', { recursive: true });
+    await page.locator('#backend-select').selectOption('webgpu');
+    await page.getByText('WEBGPU · Native HTML', { exact: false }).waitFor();
+    assert.equal(await amount.inputValue(), '10');
+    assert.equal(await film.isChecked(), false);
+    assert.equal(await page.locator('canvas').evaluate(el => el.width), 640);
+    await page.locator('#scene-select').selectOption('canvas');
+    await page.getByText('WEBGPU · 2D canvas', { exact: false }).waitFor();
+    assert.equal(await amount.inputValue(), '10');
+    assert.equal(await page.locator('canvas').evaluate(el => el.width), 640);
+    await panel.getByRole('button', { name: '恢复默认' }).click();
+    assert.equal(await amount.inputValue(), '3');
+    assert.equal(await film.isChecked(), true);
+    assert.equal(await dpr.inputValue(), '1.5');
+    await page.waitForFunction(() => document.querySelector('canvas').width === innerWidth);
+    await page.locator('#scene-select').selectOption('html');
+    await page.getByText('WEBGPU · Native HTML', { exact: false }).waitFor();
+    await panel.evaluate(el => { el.scrollTop = 0; });
+    await page.screenshot({ path: '.scratch/validation/settings-desktop.png' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => !document.querySelector('#visual-settings').open);
+    await panel.locator('summary').click();
+    await amount.focus();
+    await page.keyboard.press('End');
+    assert.equal(await amount.inputValue(), '10');
+    await panel.evaluate(el => { el.scrollTop = 0; });
+    await page.screenshot({ path: '.scratch/validation/settings-mobile.png' });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+});
+
 test('demo supports HTML input, selection, DOM updates and renderer switching', async () => {
   const page = await browser.newPage();
   const errors = [];
