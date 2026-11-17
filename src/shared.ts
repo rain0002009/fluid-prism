@@ -9,6 +9,8 @@ export interface FluidPrismOptions {
   canvas?: HTMLCanvasElement;
   /** Element or image/canvas/video used as source texture. */
   source?: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement;
+  /** Live HTML scene. Uses native HTML-in-Canvas, or leaves ordinary DOM visible. */
+  htmlSource?: HTMLElement;
   /** Draw your own scene into an internal 2D canvas before every texture upload. */
   contentRenderer?: (ctx: CanvasRenderingContext2D, size: { width: number; height: number; dpr: number; time: number }) => void;
   /** Whether the managed canvas should be fixed fullscreen. Defaults to true. */
@@ -53,7 +55,8 @@ export interface FluidPrismOptions {
   zIndex?: number | string;
 }
 
-export type ResolvedFluidPrismOptions = Required<Omit<FluidPrismOptions, 'container' | 'canvas' | 'source' | 'contentRenderer'>> & Pick<FluidPrismOptions, 'container' | 'canvas' | 'source' | 'contentRenderer'>;
+type OptionalOptions = 'container' | 'canvas' | 'source' | 'htmlSource' | 'contentRenderer';
+export type ResolvedFluidPrismOptions = Required<Omit<FluidPrismOptions, OptionalOptions>> & Pick<FluidPrismOptions, OptionalOptions>;
 
 export interface PointerState {
   x: number;
@@ -67,6 +70,9 @@ export interface PointerState {
 }
 
 export interface FluidPrismBackendController {
+  readonly htmlSourceStatus: import('./html-source').HTMLSourceStatus;
+  /** Resolves when the backend has initialized, or the HTML scene has fallen back. */
+  readonly ready: Promise<void>;
   readonly backend: FluidPrismBackendKind;
   readonly canvas: HTMLCanvasElement;
   readonly gl: WebGLRenderingContext | null;
@@ -100,9 +106,18 @@ export const DEFAULTS = {
   autoStart: true,
   hideCursor: false,
   zIndex: 0,
-} satisfies Required<Omit<FluidPrismOptions, 'container' | 'canvas' | 'source' | 'contentRenderer'>>;
+} satisfies Required<Omit<FluidPrismOptions, OptionalOptions>>;
 
 export function resolveOptions(options: FluidPrismOptions = {}): ResolvedFluidPrismOptions {
+  if (options.htmlSource && (options.source || options.contentRenderer)) {
+    throw new Error('htmlSource cannot be combined with source or contentRenderer.');
+  }
+  if (options.htmlSource) {
+    const containsCanvas = options.canvas && options.htmlSource.contains(options.canvas);
+    const containsMount = !options.canvas && options.htmlSource.contains(options.container ?? document.body);
+    if (containsCanvas || containsMount) throw new Error('htmlSource must not contain the effect canvas or its mount container.');
+    if (options.htmlSource.querySelector('[drawable]')) throw new Error('htmlSource must be a single drawable subtree; nested drawable elements are not supported.');
+  }
   return { ...DEFAULTS, ...options };
 }
 
@@ -124,8 +139,8 @@ export function applyCanvasStyle(canvas: HTMLCanvasElement, options: ResolvedFlu
   Object.assign(canvas.style, {
     position: '',
     inset: '',
-    width: '',
-    height: '',
+    width: canvas.style.width === '100vw' ? '' : canvas.style.width,
+    height: canvas.style.height === '100vh' ? '' : canvas.style.height,
     display: 'block',
     pointerEvents: '',
     zIndex: '',

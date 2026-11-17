@@ -1,3 +1,4 @@
+import { HTMLScene, type HTMLWebGLContext } from './html-source';
 import {
   applyCanvasStyle,
   createInitialPointer,
@@ -112,9 +113,11 @@ uniform float u_multiplier;
 uniform float u_colorMultiplier;
 uniform float u_shade;
 uniform float u_pastelFilm;
+uniform float u_interacting;
 float hash(vec2 p){ return fract(sin(dot(p, vec2(41.7, 289.3))) * 45758.5453); }
 vec4 sampleScene(vec2 uv){ return texture2D(u_scene, clamp(uv, vec2(.001), vec2(.999))); }
 void main(){
+  if (u_interacting > .5) { gl_FragColor = sampleScene(v_uv); return; }
   vec4 data = texture2D(u_paint, v_uv);
   float weight = (data.z + data.w) * .5;
   vec2 vel = (.5 - data.xy - .001) * 2. * weight;
@@ -137,12 +140,14 @@ void main(){
 `;
 
 export class WebGLFluidPrismBackend implements FluidPrismBackendController {
+  readonly ready = Promise.resolve();
   readonly backend = 'webgl' as const;
   readonly canvas: HTMLCanvasElement;
-  readonly gl: WebGLRenderingContext;
+  readonly gl: WebGLRenderingContext | null;
   readonly device = null;
 
   private options: ResolvedFluidPrismOptions;
+  private htmlScene: HTMLScene | null = null;
   private ownsCanvas: boolean;
   private running = false;
   private raf = 0;
@@ -161,18 +166,29 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   private dpr = 1;
   private last = performance.now();
   private pointer: PointerState = createInitialPointer(1, 1);
-  private paintProg: WebGLProgram;
-  private lowProg: WebGLProgram;
-  private finalProg: WebGLProgram;
-  private quad: WebGLBuffer;
+  private paintProg!: WebGLProgram;
+  private lowProg!: WebGLProgram;
+  private finalProg!: WebGLProgram;
+  private quad!: WebGLBuffer;
+  private wasInteracting = false;
+  private sceneWidth = 0;
+  private sceneHeight = 0;
+  private resizeObserver: ResizeObserver | null = null;
+  private destroyed = false;
+  private contextUnavailable = false;
 
   constructor(options: FluidPrismOptions = {}) {
     this.options = resolveOptions({ ...options, backend: 'webgl' });
     this.canvas = options.canvas ?? document.createElement('canvas');
     this.ownsCanvas = !options.canvas;
     const gl = this.canvas.getContext('webgl', { antialias: false, alpha: true, powerPreference: 'high-performance' });
-    if (!gl) throw new Error('FluidPrism requires WebGL support.');
     this.gl = gl;
+    if (!gl) {
+      if (!this.options.htmlSource) throw new Error('FluidPrism requires WebGL support.');
+      this.mount();
+      this.configureHTMLSource();
+      return;
+    }
     this.paintProg = this.program(paintFS);
     this.lowProg = this.program(lowFS);
     this.finalProg = this.program(finalFS);
@@ -182,17 +198,22 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     gl.bindBuffer(gl.ARRAY_BUFFER, quad);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
     this.mount();
+    this.configureHTMLSource();
     this.resize();
     this.bindEvents();
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(this.canvas);
     if (this.options.autoStart) this.start();
   }
 
   start() {
-    if (this.running) return;
+    if (this.running || this.destroyed || this.contextUnavailable || !this.gl || this.gl.isContextLost()) return;
     this.running = true;
     this.last = performance.now();
-    this.raf = requestAnimationFrame(this.render);
+    this.requestFrame();
   }
+
+  get htmlSourceStatus() { return this.htmlScene?.status ?? 'disabled'; }
 
   stop() {
     this.running = false;
@@ -200,32 +221,56 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   }
 
   destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
     this.stop();
+    this.htmlScene?.destroy();
+    this.resizeObserver?.disconnect();
     window.removeEventListener('resize', this.resize);
     window.removeEventListener('pointermove', this.move);
     window.removeEventListener('pointerdown', this.move);
+    this.canvas.removeEventListener('webglcontextlost', this.contextLost);
+    this.deletePaint();
+    if (this.gl) {
+      this.gl.deleteTexture(this.sceneTexture);
+      this.gl.deleteBuffer(this.quad);
+      for (const program of [this.paintProg, this.lowProg, this.finalProg]) this.gl.deleteProgram(program);
+    }
     if (this.ownsCanvas) this.canvas.remove();
   }
 
   update(options: Partial<FluidPrismOptions>) {
+    if (this.destroyed) return;
+    const previousSource = this.options.htmlSource;
     this.options = resolveOptions({ ...this.options, ...options, backend: 'webgl' });
+    if (this.options.htmlSource !== previousSource) this.configureHTMLSource();
     applyCanvasStyle(this.canvas, this.options);
-    this.uploadScene(performance.now());
+    this.htmlScene?.refreshStyle();
+    this.resize();
+    if (!this.htmlScene && this.gl) this.uploadScene(performance.now());
   }
 
   resize = () => {
+    if (this.destroyed || this.contextUnavailable || !this.gl) return;
     const rect = this.canvas.getBoundingClientRect();
     const viewportW = this.options.fullscreen ? window.innerWidth : rect.width || this.canvas.clientWidth || 1;
     const viewportH = this.options.fullscreen ? window.innerHeight : rect.height || this.canvas.clientHeight || 1;
     this.dpr = Math.min(this.options.dpr, window.devicePixelRatio || 1);
     this.w = Math.max(2, Math.floor(viewportW * this.dpr));
     this.h = Math.max(2, Math.floor(viewportH * this.dpr));
+    if (this.canvas.width === this.w && this.canvas.height === this.h &&
+        this.paintA?.w === Math.max(2, Math.floor(this.w * this.options.paintScale)) &&
+        this.lowPaint?.w === Math.max(2, Math.floor(this.w * this.options.lowScale))) {
+      this.htmlScene?.resize();
+      return;
+    }
     this.canvas.width = this.w;
     this.canvas.height = this.h;
     this.pw = Math.max(2, Math.floor(this.w * this.options.paintScale));
     this.ph = Math.max(2, Math.floor(this.h * this.options.paintScale));
     this.lw = Math.max(2, Math.floor(this.w * this.options.lowScale));
     this.lh = Math.max(2, Math.floor(this.h * this.options.lowScale));
+    this.deletePaint();
     this.paintA = this.fbo(this.pw, this.ph);
     this.paintB = this.fbo(this.pw, this.ph);
     this.lowPaint = this.fbo(this.lw, this.lh);
@@ -233,8 +278,30 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     this.clearPaint(this.paintB);
     this.clearPaint(this.lowPaint);
     this.pointer = createInitialPointer(viewportW, viewportH);
-    this.uploadScene(performance.now());
+    this.htmlScene?.resize();
+    if (!this.htmlScene) this.uploadScene(performance.now());
   };
+
+  private configureHTMLSource() {
+    cancelAnimationFrame(this.raf);
+    this.htmlScene?.destroy();
+    this.htmlScene = null;
+    applyCanvasStyle(this.canvas, this.options);
+    if (this.options.htmlSource) {
+      this.htmlScene = new HTMLScene(this.canvas, this.options.htmlSource, () => this.render(performance.now()));
+      this.htmlScene.activate(!this.contextUnavailable && Boolean(this.gl && !this.gl.isContextLost()) &&
+        typeof (this.gl as Partial<HTMLWebGLContext> | null)?.texElementSubImage2D === 'function');
+    }
+    this.sceneWidth = this.sceneHeight = 0;
+    this.wasInteracting = false;
+    if (this.running) this.requestFrame();
+  }
+
+  private requestFrame() {
+    if (!this.running) return;
+    if (this.htmlScene) this.htmlScene.requestPaint();
+    else this.raf = requestAnimationFrame(this.render);
+  }
 
   private mount() {
     if (this.ownsCanvas) (this.options.container ?? document.body).appendChild(this.canvas);
@@ -245,22 +312,47 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     window.addEventListener('resize', this.resize);
     window.addEventListener('pointermove', this.move, { passive: true });
     window.addEventListener('pointerdown', this.move, { passive: true });
+    this.canvas.addEventListener('webglcontextlost', this.contextLost);
+  }
+
+  private contextLost = (event: Event) => {
+    event.preventDefault();
+    this.contextUnavailable = true;
+    this.stop();
+    this.htmlScene?.fallback();
+  };
+
+  private get context() {
+    if (!this.gl) throw new Error('FluidPrism requires WebGL support.');
+    return this.gl;
   }
 
   private move = (event: PointerEvent) => {
-    this.pointer.tx = event.clientX;
-    this.pointer.ty = event.clientY;
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.tx = event.clientX - rect.left;
+    this.pointer.ty = event.clientY - rect.top;
     this.pointer.hasInput = true;
   };
 
   private render = (now: number) => {
-    if (!this.running) return;
-    const gl = this.gl;
+    if (this.htmlScene ? this.htmlScene.status !== 'native' || !this.htmlScene.snapshotReady : !this.running) return;
+    const gl = this.context;
     const dt = Math.min(32, now - this.last) / 16.666;
     this.last = now;
-    this.uploadScene(now);
+    try { this.uploadScene(now); }
+    catch (error) {
+      if (!this.htmlScene) throw error;
+      this.htmlScene.fallback();
+      return;
+    }
 
     const p = this.pointer;
+    const interacting = this.htmlScene?.interacting ?? false;
+    if (interacting && !this.wasInteracting) {
+      this.clearPaint(this.paintA); this.clearPaint(this.paintB); this.clearPaint(this.lowPaint);
+    }
+    this.wasInteracting = interacting;
+    if (interacting) { p.x = p.px = p.tx; p.y = p.py = p.ty; p.speed = 0; p.hasInput = false; }
     p.x += (p.tx - p.x) * 0.55;
     p.y += (p.ty - p.y) * 0.55;
     const dx = (p.x - p.px) * this.dpr;
@@ -324,21 +416,35 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     this.uniform1f(this.finalProg, 'u_colorMultiplier', this.options.colorMultiplier);
     this.uniform1f(this.finalProg, 'u_shade', this.options.shade);
     this.uniform1f(this.finalProg, 'u_pastelFilm', this.options.pastelFilm ? 1 : 0);
+    this.uniform1f(this.finalProg, 'u_interacting', interacting ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     p.px = p.x;
     p.py = p.y;
-    this.raf = requestAnimationFrame(this.render);
+    this.requestFrame();
   };
 
   private uploadScene(now: number) {
-    const gl = this.gl;
+    if (this.htmlScene && (!this.htmlScene.snapshotReady || !this.htmlScene.needsUpload)) return;
+    const gl = this.context;
     if (!this.sceneTexture) this.sceneTexture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, this.sceneTexture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    if (this.htmlScene) {
+      if (this.sceneWidth !== this.w || this.sceneHeight !== this.h) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this.w, this.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        this.sceneWidth = this.w; this.sceneHeight = this.h;
+      }
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
+      try {
+        (gl as HTMLWebGLContext).texElementSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.htmlScene.source, { width: this.w, height: this.h });
+        this.htmlScene.needsUpload = false;
+      } finally { gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0); }
+      return;
+    }
     renderSceneToCanvas(this.sceneCanvas, this.sceneCtx, this.options, { width: this.w, height: this.h, dpr: this.dpr }, now);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.sceneCanvas);
@@ -346,15 +452,21 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   }
 
   private clearPaint(target: FBO) {
-    const gl = this.gl;
+    const gl = this.context;
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
     gl.viewport(0, 0, target.w, target.h);
     gl.clearColor(0.5, 0.5, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
   }
 
+  private deletePaint() {
+    for (const target of [this.paintA, this.paintB, this.lowPaint]) {
+      if (target) { this.context.deleteTexture(target.texture); this.context.deleteFramebuffer(target.fb); }
+    }
+  }
+
   private tex(w: number, h: number, data: ArrayBufferView | null = null) {
-    const gl = this.gl;
+    const gl = this.context;
     const t = gl.createTexture();
     if (!t) throw new Error('Failed to create WebGL texture.');
     gl.bindTexture(gl.TEXTURE_2D, t);
@@ -367,7 +479,7 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   }
 
   private fbo(w: number, h: number): FBO {
-    const gl = this.gl;
+    const gl = this.context;
     const texture = this.tex(w, h);
     const fb = gl.createFramebuffer();
     if (!fb) throw new Error('Failed to create WebGL framebuffer.');
@@ -377,7 +489,7 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   }
 
   private shader(type: number, src: string) {
-    const gl = this.gl;
+    const gl = this.context;
     const s = gl.createShader(type);
     if (!s) throw new Error('Failed to create WebGL shader.');
     gl.shaderSource(s, src);
@@ -387,7 +499,7 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   }
 
   private program(fs: string) {
-    const gl = this.gl;
+    const gl = this.context;
     const p = gl.createProgram();
     if (!p) throw new Error('Failed to create WebGL program.');
     gl.attachShader(p, this.shader(gl.VERTEX_SHADER, quadVS));
@@ -398,16 +510,16 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   }
 
   private bindQuad(program: WebGLProgram) {
-    const gl = this.gl;
+    const gl = this.context;
     const loc = gl.getAttribLocation(program, 'a_pos');
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quad);
     gl.enableVertexAttribArray(loc);
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
   }
 
-  private uniform1i(program: WebGLProgram, name: string, x: number) { this.gl.uniform1i(this.gl.getUniformLocation(program, name), x); }
-  private uniform1f(program: WebGLProgram, name: string, x: number) { this.gl.uniform1f(this.gl.getUniformLocation(program, name), x); }
-  private uniform2f(program: WebGLProgram, name: string, x: number, y: number) { this.gl.uniform2f(this.gl.getUniformLocation(program, name), x, y); }
-  private uniform3f(program: WebGLProgram, name: string, x: number, y: number, z: number) { this.gl.uniform3f(this.gl.getUniformLocation(program, name), x, y, z); }
-  private uniform4f(program: WebGLProgram, name: string, x: number, y: number, z: number, w: number) { this.gl.uniform4f(this.gl.getUniformLocation(program, name), x, y, z, w); }
+  private uniform1i(program: WebGLProgram, name: string, x: number) { this.context.uniform1i(this.context.getUniformLocation(program, name), x); }
+  private uniform1f(program: WebGLProgram, name: string, x: number) { this.context.uniform1f(this.context.getUniformLocation(program, name), x); }
+  private uniform2f(program: WebGLProgram, name: string, x: number, y: number) { this.context.uniform2f(this.context.getUniformLocation(program, name), x, y); }
+  private uniform3f(program: WebGLProgram, name: string, x: number, y: number, z: number) { this.context.uniform3f(this.context.getUniformLocation(program, name), x, y, z); }
+  private uniform4f(program: WebGLProgram, name: string, x: number, y: number, z: number, w: number) { this.context.uniform4f(this.context.getUniformLocation(program, name), x, y, z, w); }
 }

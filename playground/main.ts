@@ -1,7 +1,19 @@
-import { webgl, webgpu, type FluidPrismBackendKind } from '../src';
+import { webgl, webgpu, type FluidPrism, type FluidPrismBackendKind } from '../src';
 
 const search = new URLSearchParams(window.location.search);
 const initialBackend = (search.get('backend') === 'webgpu' ? 'webgpu' : 'webgl') satisfies FluidPrismBackendKind;
+const scene = document.querySelector<HTMLElement>('#html-scene')!;
+const originalTitle = scene.querySelector<HTMLElement>('[data-title]')!;
+const nameInput = scene.querySelector<HTMLInputElement>('#name')!;
+const greeting = scene.querySelector<HTMLOutputElement>('#greeting')!;
+const counter = scene.querySelector<HTMLOutputElement>('#counter')!;
+let count = 0;
+nameInput.addEventListener('input', () => { greeting.textContent = `Hello, ${nameInput.value || 'Prism'}.`; });
+scene.querySelector<HTMLFormElement>('form')!.addEventListener('submit', event => {
+  event.preventDefault();
+  greeting.textContent = `Saved: ${nameInput.value || 'Prism'}.`;
+});
+scene.querySelector<HTMLButtonElement>('#increment')!.addEventListener('click', () => { counter.value = String(++count); });
 
 const controls = document.createElement('div');
 controls.innerHTML = `
@@ -12,12 +24,19 @@ controls.innerHTML = `
       <option value="webgpu">WebGPU</option>
     </select>
   </label>
+  <label class="scene-control">Scene
+    <select id="scene-select" aria-label="Scene">
+      <option value="html">HTML in Canvas</option>
+      <option value="canvas">2D canvas</option>
+    </select>
+  </label>
+  <button id="change-title" type="button">Update HTML title</button>
   <div id="backend-status" style="margin-top:10px;padding:10px 14px;border-radius:16px;background:rgba(17,17,17,.72);color:#fff;font:500 12px/1.45 Inter, Arial, sans-serif;max-width:320px;"></div>
 `;
 
 Object.assign(controls.style, {
   position: 'fixed',
-  top: '24px',
+  top: '20px',
   left: '24px',
   zIndex: '4',
 });
@@ -26,6 +45,12 @@ document.body.appendChild(controls);
 
 const select = controls.querySelector<HTMLSelectElement>('#backend-select');
 const status = controls.querySelector<HTMLDivElement>('#backend-status');
+const sceneSelect = controls.querySelector<HTMLSelectElement>('#scene-select')!;
+sceneSelect.value = search.get('scene') === 'canvas' ? 'canvas' : 'html';
+scene.hidden = sceneSelect.value !== 'html';
+controls.querySelector<HTMLButtonElement>('#change-title')!.addEventListener('click', () => {
+  originalTitle.textContent = originalTitle.textContent === 'Real HTML. Liquid light.' ? 'Live content. Same DOM.' : 'Real HTML. Liquid light.';
+});
 
 if (!select || !status) {
   throw new Error('Failed to create playground controls.');
@@ -33,7 +58,8 @@ if (!select || !status) {
 
 select.value = initialBackend;
 
-let effect: { destroy(): void } | null = null;
+let effect: FluidPrism | null = null;
+let mountVersion = 0;
 
 function updateStatus(message: string) {
   status.textContent = message;
@@ -66,25 +92,33 @@ function renderContent(ctx: CanvasRenderingContext2D, { width: w, height: h }: {
   ctx.fillText('Move your cursor to refract the page texture.', w * 0.055, h * 0.76);
 }
 
-function mountEffect(backend: FluidPrismBackendKind) {
+async function mountEffect(backend: FluidPrismBackendKind) {
+  const version = ++mountVersion;
   effect?.destroy();
   effect = null;
+  const html = sceneSelect.value === 'html';
+  scene.hidden = !html;
+  updateStatus('Preparing the selected renderer…');
   try {
-    effect = backend === 'webgpu'
-      ? webgpu.createFluidPrism({
-          zIndex: 1,
-          contentRenderer: renderContent,
-        })
-      : webgl.createFluidPrism({
-          zIndex: 1,
-          contentRenderer: renderContent,
-        });
+    const options = { zIndex: 1, ...(html ? { htmlSource: scene } : { contentRenderer: renderContent }) };
+    const instance = backend === 'webgpu' ? webgpu.createFluidPrism(options) : webgl.createFluidPrism(options);
+    effect = instance;
+    await instance.ready;
+    if (version !== mountVersion) return;
     const url = new URL(window.location.href);
     url.searchParams.set('backend', backend);
+    url.searchParams.set('scene', html ? 'html' : 'canvas');
     window.history.replaceState({}, '', url);
-    updateStatus(backend === 'webgpu'
-      ? 'WebGPU backend active. If your browser/device support it, the effect runs on WebGPU.'
-      : 'WebGL backend active. This remains the default renderer and baseline compatibility path.');
+    const reportStatus = () => {
+      if (version !== mountVersion) return;
+      updateStatus(html
+        ? instance.htmlSourceStatus === 'native'
+          ? `${backend.toUpperCase()} · Native HTML in Canvas. Hover a control, focus, or select text to pause refraction.`
+          : '普通 HTML 降级 · 当前浏览器或后端无法绘制 HTML，表单与文字选择仍可使用。'
+        : `${backend.toUpperCase()} · 2D canvas scene.`);
+    };
+    reportStatus();
+    if (html) instance.canvas.addEventListener('paint', reportStatus);
   } catch (error) {
     console.error(error);
     updateStatus(error instanceof Error ? error.message : 'Failed to initialize the selected renderer.');
@@ -96,4 +130,6 @@ select.addEventListener('change', () => {
   mountEffect(select.value === 'webgpu' ? 'webgpu' : 'webgl');
 });
 
-mountEffect(initialBackend);
+sceneSelect.addEventListener('change', () => { void mountEffect(select.value === 'webgpu' ? 'webgpu' : 'webgl'); });
+window.addEventListener('pagehide', () => effect?.destroy());
+void mountEffect(initialBackend);

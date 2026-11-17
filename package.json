@@ -23,6 +23,8 @@
   "packageManager": "pnpm@9.15.9",
   "sideEffects": false,
   "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
     "build": "tsup src/index.ts --format esm,cjs --dts --sourcemap --clean",
     "dev": "vite --config vite.config.ts",
     "build:playground": "vite build --config vite.config.ts",
@@ -43,6 +45,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "latest",
+    "playwright": "1.62.1",
     "tsup": "latest",
     "typescript": "latest",
     "vite": "latest"

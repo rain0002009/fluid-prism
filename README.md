@@ -21,6 +21,7 @@
 - 带有色散感的油膜风格折射
 - 可用于原生 JavaScript、React、Vue 及其他框架
 - 支持图片 / canvas / 视频作为输入源，也支持自定义 2D canvas 渲染器
+- 支持原生 HTML-in-Canvas，保留表单输入、文字选择与键盘操作；能力不足时显示普通 HTML
 - 支持由用户自由选择 WebGL 或 WebGPU 渲染后端
 
 ## 安装
@@ -171,6 +172,54 @@ image.onload = async () => {
   });
 };
 ```
+
+## 使用真实 HTML 场景
+
+传入已有元素的 `htmlSource`，让浏览器直接把 HTML 和 CSS 绘制到场景纹理中。它使用原生 HTML-in-Canvas，无截图依赖；WebGL 和 WebGPU 都支持。
+
+```html
+<section id="hero" style="background: #f4f1ec; padding: 48px; overflow: auto;">
+  <h1>Real HTML. Liquid light.</h1>
+  <label for="name">Your name</label>
+  <input id="name" value="Prism" />
+  <p>这段文字仍然可以选择、复制。</p>
+</section>
+```
+
+```ts
+import { createFluidPrism } from 'fluid-prism';
+
+const hero = document.querySelector<HTMLElement>('#hero')!;
+const effect = await createFluidPrism({
+  htmlSource: hero,
+  backend: 'webgl', // 也可选择 'webgpu'
+});
+await effect.ready;
+
+console.log(effect.htmlSourceStatus); // 'native' | 'fallback' | 'disabled'
+hero.querySelector('h1')!.textContent = 'Live content'; // 自动重绘
+
+// 可替换、清除 HTML 输入；切换前清除其他输入选项。
+// effect.update({ htmlSource: anotherElement });
+// effect.update({ htmlSource: undefined });
+// effect.destroy(); // 恢复元素原来的位置、drawable 属性及受管理的布局样式
+```
+
+`htmlSource` 与 `source`、`contentRenderer` 互斥。场景根元素会临时移入输出 canvas，宽高按 canvas 的 CSS 尺寸设置，GPU 纹理按 DPR 绘制；给根元素设置背景色，以及适合容器的响应式样式。非全屏场景请使用已有且有明确 CSS 宽高的 canvas，并设置 `fullscreen: false`。容器变化会通过 ResizeObserver 自动同步。
+
+### 交互与降级
+
+- 表单、链接、Tab 导航和选区沿用真实 DOM。悬停交互控件、按下指针、元素获得焦点或场景内存在文字选区时，清除残留波纹并显示未折射画面；离开控件、焦点和选区都结束后恢复。可用 `[tabindex]` 或 `[role="button"]` 标记自定义交互控件。
+- 交互优先是为了保证命中位置稳定：浏览器的 `updateElementGeometry()` 描述几何矩阵，无法逐像素表示流体 shader 的局部扭曲。拖选从指针按下时暂停；暂停前的画面仍可能与未变形的文字位置有少量差异。
+- 原生能力已在 Chrome 157 发布，其他浏览器及不同 GPU 后端可能尚不支持。本库按所选后端的方法和 canvas 能力检测；不支持或 HTML 上传失败时，隐藏效果 canvas，保留普通 HTML 的输入与选择。`htmlSourceStatus` 可用于展示状态。原生模式下根节点必须是单一 drawable 子树，不支持额外的嵌套 `[drawable]`。
+- `stop()` 停止连续流体动画；原生 DOM 变化仍会通过 `paint` 重绘，保证输入内容可见。`start()` 恢复动画。`autoStart: false` 同样会绘制初始 HTML 和后续 DOM 更新。
+- 不保证跨域图片、iframe、受保护媒体等内容进入纹理；这不是完整页面截图功能。原生模式会改变 DOM 父级，依赖父选择器、继承样式或表单祖先关系的场景，应将所需样式和表单一起放进 `htmlSource`。React/Vue 中建议提供由组件持有的独立场景根节点，并在组件卸载前 `destroy()`。
+
+显式后端创建函数也接受 `htmlSource`；WebGPU 初始化是异步的，使用 `await effect.ready` 等待后端初始化及能力判断。通用 `createFluidPrism()` 的返回 Promise 表示实例已创建，`ready` 表示后端已完成初始化。
+
+本地运行 `pnpm dev` 打开 demo，选择 **HTML in Canvas**，体验输入、保存、计数、选择文字、动态标题及两个后端切换。浏览器无原生能力时会显示降级提示。
+
+官方资料：[HTML-in-Canvas 概览](https://developer.chrome.com/blog/html-in-canvas)、[几何与兼容策略](https://developer.chrome.com/docs/web-platform/html-in-canvas/concepts)。
 
 ## React 用法
 
@@ -361,6 +410,7 @@ onBeforeUnmount(() => effect?.destroy());
 | `canvas` | `HTMLCanvasElement` | 自动创建 | 使用你自己的 canvas。 |
 | `backend` | `'webgl' \| 'webgpu'` | `'webgl'` | 选择渲染后端。`webgpu` 需要浏览器支持 WebGPU。 |
 | `source` | `HTMLImageElement \| HTMLCanvasElement \| HTMLVideoElement` | - | 用于扭曲的纹理源。 |
+| `htmlSource` | `HTMLElement` | - | 真实 HTML 场景；与 `source`、`contentRenderer` 互斥，能力不足时保留普通 DOM。 |
 | `contentRenderer` | function | - | 将场景绘制到内部 2D canvas 的函数。 |
 | `fullscreen` | `boolean` | `true` | 让 canvas 以固定定位全屏显示。 |
 | `dpr` | `number` | `1.5` | 最大设备像素比。 |
@@ -386,8 +436,10 @@ onBeforeUnmount(() => effect?.destroy());
 ## API
 
 ```ts
-const effect = createFluidPrism(options);
+const effect = await createFluidPrism(options);
+await effect.ready;
 
+effect.htmlSourceStatus; // 'disabled' | 'native' | 'fallback'
 effect.start();
 effect.stop();
 effect.update({ amount: 2.4 });
@@ -398,6 +450,19 @@ effect.destroy();
 ## 说明
 
 - 这个效果主要面向 hero 区域和视觉型落地页设计。
-- 项目有意不包含完整 DOM 截图能力。若想获得最佳效果，请传入 `source` 或 `contentRenderer`。
+- 使用 `htmlSource` 接入真实 HTML；图片、canvas、视频及自定义绘图仍可使用 `source` 或 `contentRenderer`。
 - 纹理中建议保留高对比文字或图形，这样折射效果会更明显。
 - `webgpu` 后端目前以兼容现有视觉语言为目标，适合作为现代浏览器中的可选渲染路径。
+
+## 开发验证
+
+```bash
+pnpm install
+pnpm exec playwright install chromium
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm build:playground
+```
+
+原生交互测试需要支持 HTML-in-Canvas 的浏览器。使用已安装的 Chrome 157+ 时，设置 `PLAYWRIGHT_CHANNEL=chrome` 再运行测试（PowerShell：`$env:PLAYWRIGHT_CHANNEL='chrome'; pnpm test`）。测试覆盖公共创建接口、原生绘制和动态更新、输入/选区/键盘、销毁恢复、DOM 降级及 demo 切换。

@@ -4,3 +4,6 @@ dist
 dist-playground
 .DS_Store
 *.log
+.pnpm-store/
+.scratch/html-in-canvas-reference/
+.scratch/validation/

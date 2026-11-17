@@ -1,3 +1,4 @@
+import { HTMLScene, type HTMLGPUQueue } from './html-source';
 import {
   applyCanvasStyle,
   createInitialPointer,
@@ -162,6 +163,7 @@ fn sampleScene(uv : vec2f) -> vec4f {
 fn main(@builtin(position) position : vec4f, @location(0) uvIn : vec2f) -> @location(0) vec4f {
   let paintUv = vec2f(uvIn.x, 1.0 - uvIn.y);
   let sceneUv = vec2f(uvIn.x, 1.0 - uvIn.y);
+  if (uniforms.frameC.y > 0.5) { return sampleScene(sceneUv); }
   let data = textureSample(paintTexture, linearSampler, paintUv);
   let weight = (data.z + data.w) * 0.5;
   let vel = (vec2f(0.5, 0.5) - data.xy - vec2f(0.001, 0.001)) * 2.0 * weight;
@@ -202,6 +204,7 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   readonly gl = null;
 
   private options: ResolvedFluidPrismOptions;
+  private htmlScene: HTMLScene | null = null;
   private ownsCanvas: boolean;
   private running = false;
   private destroyed = false;
@@ -233,21 +236,26 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   private lowUniformBuffer: GPUBuffer | null = null;
   private paintUniformBuffer: GPUBuffer | null = null;
   private finalUniformBuffer: GPUBuffer | null = null;
-  private ready = false;
+  private initialized = false;
   private initError: Error | null = null;
-  private initPromise: Promise<void>;
+  readonly ready: Promise<void>;
+  private wasInteracting = false;
+  private resizeObserver: ResizeObserver | null = null;
 
   constructor(options: FluidPrismOptions = {}) {
-    if (!navigator.gpu) {
+    if (!navigator.gpu && !options.htmlSource) {
       throw new Error('FluidPrism WebGPU backend requires WebGPU support.');
     }
     this.options = resolveOptions({ ...options, backend: 'webgpu' });
     this.canvas = options.canvas ?? document.createElement('canvas');
     this.ownsCanvas = !options.canvas;
     this.mount();
+    this.configureHTMLSource();
     this.resize();
     this.bindEvents();
-    this.initPromise = this.init();
+    this.ready = navigator.gpu ? this.init() : Promise.resolve();
+    this.resizeObserver = new ResizeObserver(() => this.resize());
+    this.resizeObserver.observe(this.canvas);
     if (this.options.autoStart) this.start();
   }
 
@@ -255,11 +263,13 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     return this.gpuDevice;
   }
 
+  get htmlSourceStatus() { return this.htmlScene?.status ?? 'disabled'; }
+
   start() {
-    if (this.running) return;
+    if (this.running || this.destroyed) return;
     this.running = true;
     this.last = performance.now();
-    this.raf = requestAnimationFrame(this.render);
+    this.requestFrame();
   }
 
   stop() {
@@ -268,26 +278,50 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   }
 
   destroy() {
+    if (this.destroyed) return;
     this.destroyed = true;
     this.stop();
+    this.htmlScene?.destroy();
+    this.resizeObserver?.disconnect();
     window.removeEventListener('resize', this.resize);
     window.removeEventListener('pointermove', this.move);
     window.removeEventListener('pointerdown', this.move);
+    this.context?.unconfigure();
+    this.sceneTexture?.destroy();
+    this.paintA?.texture.destroy();
+    this.paintB?.texture.destroy();
+    this.lowPaint?.texture.destroy();
+    this.lowUniformBuffer?.destroy();
+    this.paintUniformBuffer?.destroy();
+    this.finalUniformBuffer?.destroy();
+    this.gpuDevice?.destroy();
     if (this.ownsCanvas) this.canvas.remove();
   }
 
   update(options: Partial<FluidPrismOptions>) {
+    if (this.destroyed) return;
+    const previousSource = this.options.htmlSource;
     this.options = resolveOptions({ ...this.options, ...options, backend: 'webgpu' });
+    if (this.options.htmlSource !== previousSource) this.configureHTMLSource();
     applyCanvasStyle(this.canvas, this.options);
+    this.htmlScene?.refreshStyle();
+    this.resize();
   }
 
   resize = () => {
+    if (this.destroyed) return;
     const rect = this.canvas.getBoundingClientRect();
     const viewportW = this.options.fullscreen ? window.innerWidth : rect.width || this.canvas.clientWidth || 1;
     const viewportH = this.options.fullscreen ? window.innerHeight : rect.height || this.canvas.clientHeight || 1;
     this.dpr = Math.min(this.options.dpr, window.devicePixelRatio || 1);
     this.w = Math.max(2, Math.floor(viewportW * this.dpr));
     this.h = Math.max(2, Math.floor(viewportH * this.dpr));
+    if (this.canvas.width === this.w && this.canvas.height === this.h &&
+        this.pw === Math.max(2, Math.floor(this.w * this.options.paintScale)) &&
+        this.lw === Math.max(2, Math.floor(this.w * this.options.lowScale))) {
+      this.htmlScene?.resize();
+      return;
+    }
     this.canvas.width = this.w;
     this.canvas.height = this.h;
     this.pw = Math.max(2, Math.floor(this.w * this.options.paintScale));
@@ -295,8 +329,32 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     this.lw = Math.max(2, Math.floor(this.w * this.options.lowScale));
     this.lh = Math.max(2, Math.floor(this.h * this.options.lowScale));
     this.pointer = createInitialPointer(viewportW, viewportH);
-    if (this.ready) this.recreateResources();
+    if (this.initialized) this.recreateResources();
+    this.htmlScene?.resize();
   };
+
+  private configureHTMLSource() {
+    cancelAnimationFrame(this.raf);
+    this.htmlScene?.destroy();
+    this.htmlScene = null;
+    applyCanvasStyle(this.canvas, this.options);
+    if (this.options.htmlSource) {
+      this.htmlScene = new HTMLScene(this.canvas, this.options.htmlSource, () => this.render(performance.now()));
+      if (this.initialized) this.activateHTMLSource();
+    }
+    this.wasInteracting = false;
+    if (this.running) this.requestFrame();
+  }
+
+  private activateHTMLSource() {
+    this.htmlScene?.activate(typeof (this.gpuDevice?.queue as Partial<HTMLGPUQueue> | undefined)?.drawElementImageToTexture === 'function');
+  }
+
+  private requestFrame() {
+    if (!this.running) return;
+    if (this.htmlScene) this.htmlScene.requestPaint();
+    else this.raf = requestAnimationFrame(this.render);
+  }
 
   private mount() {
     if (this.ownsCanvas) (this.options.container ?? document.body).appendChild(this.canvas);
@@ -310,8 +368,9 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   }
 
   private move = (event: PointerEvent) => {
-    this.pointer.tx = event.clientX;
-    this.pointer.ty = event.clientY;
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.tx = event.clientX - rect.left;
+    this.pointer.ty = event.clientY - rect.top;
     this.pointer.hasInput = true;
   };
 
@@ -320,7 +379,7 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
       const adapter = await navigator.gpu.requestAdapter();
       if (!adapter) throw new Error('WebGPU adapter unavailable.');
       const device = await adapter.requestDevice();
-      if (this.destroyed) return;
+      if (this.destroyed) { device.destroy(); return; }
       this.gpuDevice = device;
       const context = this.canvas.getContext('webgpu') as GPUCanvasContext | null;
       if (!context) throw new Error('Failed to create WebGPU canvas context.');
@@ -350,15 +409,18 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
       device.lost.then((info) => {
         if (this.destroyed) return;
         this.initError = new Error(`WebGPU device lost: ${info.message}`);
-        this.ready = false;
+        this.initialized = false;
+        this.htmlScene?.fallback();
         this.stop();
       });
 
-      this.ready = true;
+      this.initialized = true;
       this.recreateResources();
+      this.activateHTMLSource();
     } catch (error) {
       this.initError = error instanceof Error ? error : new Error(String(error));
       this.stop();
+      this.htmlScene?.fallback();
     }
   }
 
@@ -399,6 +461,7 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     this.clearTexture(this.paintA.texture, { r: 0.5, g: 0.5, b: 0, a: 0 });
     this.clearTexture(this.paintB.texture, { r: 0.5, g: 0.5, b: 0, a: 0 });
     this.clearTexture(this.lowPaint.texture, { r: 0.5, g: 0.5, b: 0, a: 0 });
+    if (this.htmlScene) this.htmlScene.needsUpload = true;
   }
 
   private createPingTexture(width: number, height: number): PingTexture {
@@ -427,28 +490,49 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   }
 
   private render = (now: number) => {
-    if (!this.running) return;
+    if (this.htmlScene ? this.htmlScene.status !== 'native' || !this.htmlScene.snapshotReady : !this.running) return;
     if (this.initError) {
       console.error(this.initError);
       this.stop();
       return;
     }
-    if (!this.ready || !this.gpuDevice || !this.context || !this.surfaceFormat || !this.sampler || !this.sceneTexture || !this.sceneView || !this.paintA || !this.paintB || !this.lowPaint || !this.lowPipeline || !this.paintPipeline || !this.finalPipeline || !this.lowUniformBuffer || !this.paintUniformBuffer || !this.finalUniformBuffer) {
-      this.raf = requestAnimationFrame(this.render);
+    if (!this.initialized || !this.gpuDevice || !this.context || !this.surfaceFormat || !this.sampler || !this.sceneTexture || !this.sceneView || !this.paintA || !this.paintB || !this.lowPaint || !this.lowPipeline || !this.paintPipeline || !this.finalPipeline || !this.lowUniformBuffer || !this.paintUniformBuffer || !this.finalUniformBuffer) {
+      this.requestFrame();
       return;
     }
 
     const dt = Math.min(32, now - this.last) / 16.666;
     this.last = now;
 
-    renderSceneToCanvas(this.sceneCanvas, this.sceneCtx, this.options, { width: this.w, height: this.h, dpr: this.dpr }, now);
-    this.gpuDevice.queue.copyExternalImageToTexture(
-      { source: this.sceneCanvas },
-      { texture: this.sceneTexture },
-      { width: this.w, height: this.h },
-    );
+    if (this.htmlScene) {
+      if (this.htmlScene.needsUpload) {
+        try {
+          (this.gpuDevice.queue as HTMLGPUQueue).drawElementImageToTexture(
+            { source: this.htmlScene.source },
+            { texture: this.sceneTexture, size: { width: this.w, height: this.h } },
+          );
+          this.htmlScene.needsUpload = false;
+        } catch {
+          this.htmlScene.fallback();
+          return;
+        }
+      }
+    } else {
+      renderSceneToCanvas(this.sceneCanvas, this.sceneCtx, this.options, { width: this.w, height: this.h, dpr: this.dpr }, now);
+      this.gpuDevice.queue.copyExternalImageToTexture(
+        { source: this.sceneCanvas }, { texture: this.sceneTexture }, { width: this.w, height: this.h },
+      );
+    }
 
     const p = this.pointer;
+    const interacting = this.htmlScene?.interacting ?? false;
+    if (interacting && !this.wasInteracting) {
+      this.clearTexture(this.paintA.texture, { r: 0.5, g: 0.5, b: 0, a: 0 });
+      this.clearTexture(this.paintB.texture, { r: 0.5, g: 0.5, b: 0, a: 0 });
+      this.clearTexture(this.lowPaint.texture, { r: 0.5, g: 0.5, b: 0, a: 0 });
+    }
+    this.wasInteracting = interacting;
+    if (interacting) { p.x = p.px = p.tx; p.y = p.py = p.ty; p.speed = 0; p.hasInput = false; }
     p.x += (p.tx - p.x) * 0.55;
     p.y += (p.ty - p.y) * 0.55;
     const dx = (p.x - p.px) * this.dpr;
@@ -475,7 +559,7 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     this.gpuDevice.queue.writeBuffer(this.finalUniformBuffer, 0, new Float32Array([
       1 / this.pw, 1 / this.ph, now * 0.001, this.options.amount,
       this.options.rgbShift, this.options.multiplier, this.options.colorMultiplier, this.options.shade,
-      this.options.pastelFilm ? 1 : 0, 0, 0, 0,
+      this.options.pastelFilm ? 1 : 0, interacting ? 1 : 0, 0, 0,
     ]));
 
     const encoder = this.gpuDevice.createCommandEncoder();
@@ -549,6 +633,6 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     this.gpuDevice.queue.submit([encoder.finish()]);
     p.px = p.x;
     p.py = p.y;
-    this.raf = requestAnimationFrame(this.render);
+    this.requestFrame();
   };
 }
