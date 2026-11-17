@@ -113,11 +113,9 @@ uniform float u_multiplier;
 uniform float u_colorMultiplier;
 uniform float u_shade;
 uniform float u_pastelFilm;
-uniform float u_interacting;
 float hash(vec2 p){ return fract(sin(dot(p, vec2(41.7, 289.3))) * 45758.5453); }
 vec4 sampleScene(vec2 uv){ return texture2D(u_scene, clamp(uv, vec2(.001), vec2(.999))); }
 void main(){
-  if (u_interacting > .5) { gl_FragColor = sampleScene(v_uv); return; }
   vec4 data = texture2D(u_paint, v_uv);
   float weight = (data.z + data.w) * .5;
   vec2 vel = (.5 - data.xy - .001) * 2. * weight;
@@ -170,7 +168,6 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   private lowProg!: WebGLProgram;
   private finalProg!: WebGLProgram;
   private quad!: WebGLBuffer;
-  private wasInteracting = false;
   private sceneWidth = 0;
   private sceneHeight = 0;
   private resizeObserver: ResizeObserver | null = null;
@@ -293,7 +290,6 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
         typeof (this.gl as Partial<HTMLWebGLContext> | null)?.texElementSubImage2D === 'function');
     }
     this.sceneWidth = this.sceneHeight = 0;
-    this.wasInteracting = false;
     if (this.running) this.requestFrame();
   }
 
@@ -348,10 +344,7 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
 
     const p = this.pointer;
     const interacting = this.htmlScene?.interacting ?? false;
-    if (interacting && !this.wasInteracting) {
-      this.clearPaint(this.paintA); this.clearPaint(this.paintB); this.clearPaint(this.lowPaint);
-    }
-    this.wasInteracting = interacting;
+    // Stop emitting strokes during interaction; existing ripples keep decaying.
     if (interacting) { p.x = p.px = p.tx; p.y = p.py = p.ty; p.speed = 0; p.hasInput = false; }
     p.x += (p.tx - p.x) * 0.55;
     p.y += (p.ty - p.y) * 0.55;
@@ -416,7 +409,6 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     this.uniform1f(this.finalProg, 'u_colorMultiplier', this.options.colorMultiplier);
     this.uniform1f(this.finalProg, 'u_shade', this.options.shade);
     this.uniform1f(this.finalProg, 'u_pastelFilm', this.options.pastelFilm ? 1 : 0);
-    this.uniform1f(this.finalProg, 'u_interacting', interacting ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     p.px = p.x;

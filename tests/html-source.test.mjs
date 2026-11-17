@@ -140,6 +140,67 @@ test('native WebGPU HTML supports live form interaction and restores DOM on dest
   }
 });
 
+test('hovering HTML controls lets existing ripples decay and does not emit new ones', async () => {
+  for (const backend of ['webgl', 'webgpu']) {
+    const page = await fixture();
+    try {
+      await page.evaluate(async ({ modulePath, backend }) => {
+        const { createFluidPrism } = await import(modulePath);
+        const source = document.querySelector('#scene');
+        source.style.cssText = 'background: repeating-linear-gradient(90deg, #111 0 8px, #eee 8px 16px); position: relative;';
+        source.innerHTML = '<button style="position:absolute;left:50px;top:450px;width:1100px;height:150px;appearance:none;border:0;background:#ccc;outline:none">Control</button>';
+        window.effect = await createFluidPrism({ backend, htmlSource: source, amount: 10, colorMultiplier: 0, pastelFilm: false, pushStrength: 0, curlStrength: 0 });
+        await window.effect.ready;
+        const output = document.createElement('canvas');
+        output.width = window.effect.canvas.width;
+        output.height = 400;
+        const ctx = output.getContext('2d', { willReadFrequently: true });
+        let baseline;
+        window.ripplePixels = () => new Promise(resolve => {
+          const canvas = window.effect.canvas;
+          canvas.addEventListener('paint', () => {
+            ctx.drawImage(canvas, 0, 0);
+            const pixels = ctx.getImageData(0, 0, output.width, output.height).data;
+            if (!baseline) baseline = pixels.slice();
+            let changed = 0;
+            for (let i = 0; i < pixels.length; i += 4) {
+              if (Math.max(Math.abs(pixels[i] - baseline[i]), Math.abs(pixels[i + 1] - baseline[i + 1]), Math.abs(pixels[i + 2] - baseline[i + 2])) > 12) changed++;
+            }
+            resolve(changed);
+          }, { once: true });
+          canvas.requestPaint();
+        });
+      }, { modulePath, backend });
+      assert.equal(await page.evaluate(() => window.ripplePixels()), 0);
+      for (let x = 100; x <= 850; x += 75) {
+        await page.mouse.move(x, 250);
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+      }
+      const moving = await page.evaluate(() => window.ripplePixels());
+      assert.ok(moving > 200, `${backend}: pointer movement must produce visible ripples (${moving} pixels)`);
+      await page.getByRole('button', { name: 'Control' }).hover();
+      const hovering = await page.evaluate(() => window.ripplePixels());
+      assert.ok(hovering > 100, `${backend}: existing ripples must remain when hovering a control (${hovering} pixels)`);
+      await page.waitForTimeout(2500);
+      const settled = await page.evaluate(() => window.ripplePixels());
+      assert.ok(settled < hovering / 2, `${backend}: existing ripples must decay naturally (${hovering} -> ${settled})`);
+      for (let x = 100; x <= 1000; x += 100) {
+        await page.mouse.move(x, 460);
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+      }
+      const suppressed = await page.evaluate(() => window.ripplePixels());
+      assert.ok(suppressed < 100, `${backend}: moving within a control must not emit new ripples (${suppressed} pixels)`);
+      for (let x = 850; x >= 100; x -= 75) {
+        await page.mouse.move(x, 250);
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+      }
+      assert.ok(await page.evaluate(() => window.ripplePixels()) > 200, `${backend}: leaving a control must resume new ripples`);
+    } finally {
+      await page.close();
+    }
+  }
+});
+
 test('HTML sources can be replaced and cleared, restoring placement and custom canvas attributes', async () => {
   const page = await fixture();
   try {

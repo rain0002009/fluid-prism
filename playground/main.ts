@@ -113,7 +113,7 @@ async function mountEffect(backend: FluidPrismBackendKind) {
       if (version !== mountVersion) return;
       updateStatus(html
         ? instance.htmlSourceStatus === 'native'
-          ? `${backend.toUpperCase()} · Native HTML in Canvas. Hover a control, focus, or select text to pause refraction.`
+          ? `${backend.toUpperCase()} · Native HTML in Canvas. Controls pause new ripples; existing trails fade naturally.`
           : '普通 HTML 降级 · 当前浏览器或后端无法绘制 HTML，表单与文字选择仍可使用。'
         : `${backend.toUpperCase()} · 2D canvas scene.`);
     };

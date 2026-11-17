@@ -163,7 +163,6 @@ fn sampleScene(uv : vec2f) -> vec4f {
 fn main(@builtin(position) position : vec4f, @location(0) uvIn : vec2f) -> @location(0) vec4f {
   let paintUv = vec2f(uvIn.x, 1.0 - uvIn.y);
   let sceneUv = vec2f(uvIn.x, 1.0 - uvIn.y);
-  if (uniforms.frameC.y > 0.5) { return sampleScene(sceneUv); }
   let data = textureSample(paintTexture, linearSampler, paintUv);
   let weight = (data.z + data.w) * 0.5;
   let vel = (vec2f(0.5, 0.5) - data.xy - vec2f(0.001, 0.001)) * 2.0 * weight;
@@ -239,7 +238,6 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   private initialized = false;
   private initError: Error | null = null;
   readonly ready: Promise<void>;
-  private wasInteracting = false;
   private resizeObserver: ResizeObserver | null = null;
 
   constructor(options: FluidPrismOptions = {}) {
@@ -342,7 +340,6 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
       this.htmlScene = new HTMLScene(this.canvas, this.options.htmlSource, () => this.render(performance.now()));
       if (this.initialized) this.activateHTMLSource();
     }
-    this.wasInteracting = false;
     if (this.running) this.requestFrame();
   }
 
@@ -526,12 +523,7 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
 
     const p = this.pointer;
     const interacting = this.htmlScene?.interacting ?? false;
-    if (interacting && !this.wasInteracting) {
-      this.clearTexture(this.paintA.texture, { r: 0.5, g: 0.5, b: 0, a: 0 });
-      this.clearTexture(this.paintB.texture, { r: 0.5, g: 0.5, b: 0, a: 0 });
-      this.clearTexture(this.lowPaint.texture, { r: 0.5, g: 0.5, b: 0, a: 0 });
-    }
-    this.wasInteracting = interacting;
+    // Stop emitting strokes during interaction; existing ripples keep decaying.
     if (interacting) { p.x = p.px = p.tx; p.y = p.py = p.ty; p.speed = 0; p.hasInput = false; }
     p.x += (p.tx - p.x) * 0.55;
     p.y += (p.ty - p.y) * 0.55;
@@ -559,7 +551,7 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     this.gpuDevice.queue.writeBuffer(this.finalUniformBuffer, 0, new Float32Array([
       1 / this.pw, 1 / this.ph, now * 0.001, this.options.amount,
       this.options.rgbShift, this.options.multiplier, this.options.colorMultiplier, this.options.shade,
-      this.options.pastelFilm ? 1 : 0, interacting ? 1 : 0, 0, 0,
+      this.options.pastelFilm ? 1 : 0, 0, 0, 0,
     ]));
 
     const encoder = this.gpuDevice.createCommandEncoder();
