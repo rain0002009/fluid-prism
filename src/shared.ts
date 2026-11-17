@@ -80,6 +80,7 @@ export interface FluidPrismBackendController {
   start(): void;
   stop(): void;
   destroy(): void;
+  /** Merge options; undefined restores defaults or clears an optional input. */
   update(options: Partial<FluidPrismOptions>): void;
   resize(): void;
 }
@@ -118,11 +119,19 @@ export function resolveOptions(options: FluidPrismOptions = {}): ResolvedFluidPr
     if (containsCanvas || containsMount) throw new Error('htmlSource must not contain the effect canvas or its mount container.');
     if (options.htmlSource.querySelector('[drawable]')) throw new Error('htmlSource must be a single drawable subtree; nested drawable elements are not supported.');
   }
-  return { ...DEFAULTS, ...options };
+  // Framework props can disappear between renders. Explicit undefined resets them.
+  const definedOptions = Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined));
+  return { ...DEFAULTS, ...definedOptions };
 }
+
+const fullscreenProperties = ['position', 'top', 'right', 'bottom', 'left', 'width', 'height', 'z-index', 'pointer-events'] as const;
+const localCanvasStyles = new WeakMap<HTMLCanvasElement, [string, string, string][]>();
 
 export function applyCanvasStyle(canvas: HTMLCanvasElement, options: ResolvedFluidPrismOptions) {
   if (options.fullscreen) {
+    if (!localCanvasStyles.has(canvas)) {
+      localCanvasStyles.set(canvas, fullscreenProperties.map(name => [name, canvas.style.getPropertyValue(name), canvas.style.getPropertyPriority(name)]));
+    }
     Object.assign(canvas.style, {
       position: 'fixed',
       inset: '0',
@@ -136,14 +145,16 @@ export function applyCanvasStyle(canvas: HTMLCanvasElement, options: ResolvedFlu
     return;
   }
 
+  const localStyles = localCanvasStyles.get(canvas);
+  if (localStyles) {
+    for (const [name, value, priority] of localStyles) {
+      if (value) canvas.style.setProperty(name, value, priority);
+      else canvas.style.removeProperty(name);
+    }
+    localCanvasStyles.delete(canvas);
+  }
   Object.assign(canvas.style, {
-    position: '',
-    inset: '',
-    width: canvas.style.width === '100vw' ? '' : canvas.style.width,
-    height: canvas.style.height === '100vh' ? '' : canvas.style.height,
     display: 'block',
-    pointerEvents: '',
-    zIndex: '',
     cursor: options.hideCursor ? 'none' : '',
   });
 }

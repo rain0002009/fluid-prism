@@ -45,9 +45,15 @@
   "license": "MIT",
   "devDependencies": {
     "@types/node": "latest",
+    "@types/react": "19",
+    "@types/react-dom": "19",
+    "@vue/compiler-sfc": "3",
     "playwright": "1.62.1",
+    "react": "19",
+    "react-dom": "19",
     "tsup": "latest",
     "typescript": "latest",
-    "vite": "latest"
+    "vite": "latest",
+    "vue": "3"
   }
 }

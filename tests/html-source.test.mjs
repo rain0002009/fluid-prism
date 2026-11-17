@@ -65,6 +65,65 @@ test('unsupported native HTML keeps the original interactive DOM available', asy
   }
 });
 
+test('local canvases retain component layout through updates and fullscreen round trips', async () => {
+  const page = await fixture();
+  try {
+    const result = await page.evaluate(async modulePath => {
+      const { webgl, webgpu } = await import(modulePath);
+      const results = [];
+      for (const factory of [webgl, webgpu]) {
+        const canvas = document.createElement('canvas');
+        canvas.style.cssText = 'position: absolute; top: 12px; left: 20px; width: 480px; height: 320px; z-index: 7;';
+        document.body.append(canvas);
+        const effect = factory.createFluidPrism({ canvas, fullscreen: false, htmlSource: document.querySelector('#scene'), autoStart: false });
+        await effect.ready;
+        const layout = () => [canvas.style.position, canvas.style.top, canvas.style.right, canvas.style.bottom, canvas.style.left, canvas.style.width, canvas.style.height, canvas.style.zIndex];
+        const initial = layout();
+        effect.update({ amount: 6 });
+        const updated = layout();
+        effect.update({ fullscreen: true });
+        effect.update({ fullscreen: false });
+        results.push({ initial, updated, restored: layout() });
+        effect.destroy();
+        canvas.remove();
+      }
+      return results;
+    }, modulePath);
+    const expected = ['absolute', '12px', '', '', '20px', '480px', '320px', '7'];
+    assert.deepEqual(result, Array.from({ length: 2 }, () => ({ initial: expected, updated: expected, restored: expected })));
+  } finally {
+    await page.close();
+  }
+});
+
+test('clearing a visual option restores its default without replacing the HTML scene', async () => {
+  const page = await fixture();
+  try {
+    const result = await page.evaluate(async modulePath => {
+      const { webgl, webgpu } = await import(modulePath);
+      const widths = [];
+      const source = document.querySelector('#scene');
+      for (const factory of [webgl, webgpu]) {
+        const canvas = document.createElement('canvas');
+        canvas.style.cssText = 'width: 480px; height: 320px;';
+        document.body.append(canvas);
+        const effect = factory.createFluidPrism({ canvas, fullscreen: false, htmlSource: source, dpr: 0.5, autoStart: false });
+        await effect.ready;
+        const initial = canvas.width;
+        source.querySelector('input').value = 'Keep my form';
+        effect.update({ dpr: undefined });
+        widths.push([initial, canvas.width, source.querySelector('input').value]);
+        effect.destroy();
+        canvas.remove();
+      }
+      return widths;
+    }, modulePath);
+    assert.deepEqual(result, [[240, 480, 'Keep my form'], [240, 480, 'Keep my form']]);
+  } finally {
+    await page.close();
+  }
+});
+
 test('native WebGL HTML paints live content and preserves input, keyboard and selection', async () => {
   const page = await fixture();
   const errors = [];

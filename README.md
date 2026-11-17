@@ -227,184 +227,194 @@ image.onload = async () => {
 
 ## React 用法
 
-```tsx
-import { useEffect, useRef } from 'react';
-import { createFluidPrism, type FluidPrism } from 'fluid-prism';
+与 shadcn 的源码使用方式类似，把下面的 `FluidPrism.tsx` 复制到项目，再从本地路径导入。npm 包提供框架无关的核心，不包含 React/Vue 组件或 shadcn registry。
 
-export function Hero() {
+封装将 `children` 作为 HTML 场景，支持 `className`、`style`、动态参数和后端切换。容器必须有明确高度，例如 `h-[480px]` 或 `style={{ height: 480 }}`。初始化只在客户端执行；降级时保留同一棵普通 DOM。
+
+```tsx
+'use client';
+
+import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
+import { webgl, webgpu, type FluidPrism, type FluidPrismOptions } from 'fluid-prism';
+
+type VisualOptions = Omit<FluidPrismOptions,
+  'backend' | 'container' | 'canvas' | 'htmlSource' | 'source' | 'contentRenderer' |
+  'fullscreen' | 'autoStart' | 'zIndex' | 'hideCursor' | 'backgroundColor'>;
+
+type Props = {
+  children: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+  backend?: 'webgl' | 'webgpu';
+  options?: VisualOptions;
+};
+
+const emptyOptions: VisualOptions = {};
+
+export function FluidPrismView({ children, className, style, backend = 'webgl', options = emptyOptions }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const effectRef = useRef<FluidPrism | null>(null);
+  const previousOptions = useRef<VisualOptions>({});
 
   useEffect(() => {
-    if (!hostRef.current) return;
+    const host = hostRef.current;
+    const content = contentRef.current;
+    if (!host || !content) return;
 
-    let disposed = false;
-
-    void createFluidPrism({
-      container: hostRef.current,
-      fullscreen: true,
-      zIndex: 0,
-      contentRenderer(ctx, { width, height }) {
-        ctx.fillStyle = '#f4f1ec';
-        ctx.fillRect(0, 0, width, height);
-        ctx.fillStyle = '#050505';
-        ctx.font = `900 ${Math.max(88, width * 0.14)}px Inter, sans-serif`;
-        ctx.textBaseline = 'middle';
-        ctx.fillText('Fluid prism', width * 0.08, height * 0.5);
-      },
-    }).then((effect) => {
-      if (disposed) {
-        effect.destroy();
-        return;
-      }
-      effectRef.current = effect;
-    });
+    // Switching rendering contexts requires a fresh canvas.
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;background:inherit';
+    host.appendChild(canvas);
+    const factory = backend === 'webgpu' ? webgpu : webgl;
+    const effect = factory.createFluidPrism({ canvas, htmlSource: content, fullscreen: false });
+    effectRef.current = effect;
+    previousOptions.current = {};
 
     return () => {
-      disposed = true;
-      effectRef.current?.destroy();
+      // Restore the content before removing its temporary canvas parent.
+      effect.destroy();
+      canvas.remove();
+      effectRef.current = null;
     };
-  }, []);
+  }, [backend]);
+
+  useEffect(() => {
+    const reset = Object.fromEntries(Object.keys(previousOptions.current).map(key => [key, undefined]));
+    effectRef.current?.update({ ...reset, ...options });
+    previousOptions.current = { ...options };
+  }, [options, backend]);
 
   return (
-    <section ref={hostRef} style={{ position: 'relative', minHeight: '100vh' }}>
-      {/* 如有需要，可将普通 DOM 内容放在 canvas 上层。 */}
-      <div style={{ position: 'relative', zIndex: 2, pointerEvents: 'none' }}>
-        <h1>Fluid prism</h1>
+    <div ref={hostRef} className={className} style={{ ...style, position: 'relative' }}>
+      <div ref={contentRef} style={{ width: '100%', height: '100%', overflow: 'auto', background: 'inherit' }}>
+        {children}
       </div>
-    </section>
+    </div>
   );
 }
 ```
 
-### React 中使用你自己的 canvas
+在页面中使用；可以将原生按钮、输入框替换为项目自己的 shadcn `Button`、`Input`。通过 Portal 渲染到场景根节点之外的弹层不会参与折射。
 
 ```tsx
-import { useEffect, useRef } from 'react';
-import { createFluidPrism } from 'fluid-prism';
+'use client';
 
-export function CanvasEffect() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+import { useMemo, useState } from 'react';
+import { FluidPrismView } from './components/FluidPrism';
 
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    let disposed = false;
-    let effect: Awaited<ReturnType<typeof createFluidPrism>> | null = null;
+export function Hero() {
+  const [amount, setAmount] = useState(3);
+  const [name, setName] = useState('Prism');
+  const options = useMemo(() => ({ amount, pastelFilm: true }), [amount]);
 
-    void createFluidPrism({
-      canvas: canvasRef.current,
-      fullscreen: false,
-      backgroundColor: '#f4f1ec',
-    }).then((instance) => {
-      if (disposed) {
-        instance.destroy();
-        return;
-      }
-      effect = instance;
-    });
-
-    return () => {
-      disposed = true;
-      effect?.destroy();
-    };
-  }, []);
-
-  return <canvas ref={canvasRef} style={{ width: 800, height: 500 }} />;
+  return (
+    <>
+      <label>折射强度 <input type="range" min="0" max="10" step="0.1"
+        value={amount} onChange={event => setAmount(Number(event.target.value))} /></label>
+      <FluidPrismView options={options} style={{ height: 480, background: '#f4f1ec' }}>
+        <section style={{ padding: 32 }}>
+          <h1>Hello, {name}</h1>
+          <label>Name <input value={name} onChange={event => setName(event.target.value)} /></label>
+          <button onClick={() => setName('Prism')}>Reset name</button>
+          <p>这段文字可以选择和复制。</p>
+        </section>
+      </FluidPrismView>
+    </>
+  );
 }
 ```
 
 ## Vue 用法
 
+把下面的 `FluidPrism.vue` 复制到项目，通过默认 slot 放入 HTML 场景。`class` 和 `style` 自动落到外层容器，`options` 响应式更新效果；`backend` 变化时销毁旧实例并创建新 canvas。slot 始终只渲染一次，不用 `v-if` 在原生和降级之间重建表单。
+
 ```vue
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
-import { createFluidPrism, type FluidPrism } from 'fluid-prism';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { webgl, webgpu, type FluidPrism, type FluidPrismOptions } from 'fluid-prism';
 
-const hostRef = ref<HTMLElement | null>(null);
+type VisualOptions = Omit<FluidPrismOptions,
+  'backend' | 'container' | 'canvas' | 'htmlSource' | 'source' | 'contentRenderer' |
+  'fullscreen' | 'autoStart' | 'zIndex' | 'hideCursor' | 'backgroundColor'>;
+
+const props = withDefaults(defineProps<{
+  backend?: 'webgl' | 'webgpu';
+  options?: VisualOptions;
+}>(), { backend: 'webgl', options: () => ({}) });
+
+const hostRef = ref<HTMLDivElement | null>(null);
+const contentRef = ref<HTMLDivElement | null>(null);
 let effect: FluidPrism | null = null;
+let canvas: HTMLCanvasElement | null = null;
+let previousOptions: VisualOptions = {};
 
-onMounted(() => {
-  if (!hostRef.value) return;
-
-  void createFluidPrism({
-    container: hostRef.value,
-    fullscreen: true,
-    zIndex: 0,
-    contentRenderer(ctx, { width, height }) {
-      ctx.fillStyle = '#f4f1ec';
-      ctx.fillRect(0, 0, width, height);
-      ctx.fillStyle = '#050505';
-      ctx.font = `900 ${Math.max(88, width * 0.14)}px Inter, sans-serif`;
-      ctx.textBaseline = 'middle';
-      ctx.fillText('Fluid prism', width * 0.08, height * 0.5);
-    },
-  }).then((instance) => {
-    effect = instance;
-  });
-});
-
-onBeforeUnmount(() => {
+function dispose() {
   effect?.destroy();
   effect = null;
-});
+  canvas?.remove();
+  canvas = null;
+}
+
+function mount() {
+  dispose();
+  if (!hostRef.value || !contentRef.value) return;
+  canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;background:inherit';
+  hostRef.value.appendChild(canvas);
+  const factory = props.backend === 'webgpu' ? webgpu : webgl;
+  effect = factory.createFluidPrism({
+    ...props.options, canvas, htmlSource: contentRef.value, fullscreen: false,
+  });
+  previousOptions = { ...props.options };
+}
+
+onMounted(mount);
+onBeforeUnmount(dispose);
+watch(() => props.backend, mount, { flush: 'post' });
+watch(() => props.options, options => {
+  const reset = Object.fromEntries(Object.keys(previousOptions).map(key => [key, undefined]));
+  effect?.update({ ...reset, ...options });
+  previousOptions = { ...options };
+}, { deep: true, flush: 'post' });
 </script>
 
 <template>
-  <section ref="hostRef" class="hero">
-    <div class="content">
-      <h1>Fluid prism</h1>
+  <div ref="hostRef" style="position: relative">
+    <div ref="contentRef" style="width: 100%; height: 100%; overflow: auto; background: inherit">
+      <slot />
     </div>
-  </section>
+  </div>
 </template>
-
-<style scoped>
-.hero {
-  position: relative;
-  min-height: 100vh;
-}
-.content {
-  position: relative;
-  z-index: 2;
-  pointer-events: none;
-}
-</style>
 ```
 
-### Vue 中使用你自己的 canvas
+页面示例：
 
 ```vue
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue';
-import { createFluidPrism, type FluidPrism } from 'fluid-prism';
+import { reactive, ref } from 'vue';
+import FluidPrism from './components/FluidPrism.vue';
 
-const canvasRef = ref<HTMLCanvasElement | null>(null);
-let effect: FluidPrism | null = null;
-
-onMounted(() => {
-  if (!canvasRef.value) return;
-  void createFluidPrism({
-    canvas: canvasRef.value,
-    fullscreen: false,
-    backgroundColor: '#f4f1ec',
-  }).then((instance) => {
-    effect = instance;
-  });
-});
-
-onBeforeUnmount(() => effect?.destroy());
+const name = ref('Prism');
+const options = reactive({ amount: 3, pastelFilm: true });
 </script>
 
 <template>
-  <canvas ref="canvasRef" class="effect" />
+  <label>折射强度 <input v-model.number="options.amount" type="range" min="0" max="10" step="0.1" /></label>
+  <FluidPrism :options="options" style="height: 480px; background: #f4f1ec">
+    <section style="padding: 32px">
+      <h1>Hello, {{ name }}</h1>
+      <label>Name <input v-model="name" /></label>
+      <button @click="name = 'Prism'">Reset name</button>
+      <p>这段文字可以选择和复制。</p>
+    </section>
+  </FluidPrism>
 </template>
-
-<style scoped>
-.effect {
-  width: 800px;
-  height: 500px;
-}
-</style>
 ```
+
+两个封装使用同步返回实例的命名创建函数，立即注册清理逻辑，覆盖 React StrictMode、快速卸载和 WebGPU 尚未就绪的情况。WebGPU 异步初始化由核心处理；需要检查最终能力时，等待实例的 `ready`。`backend` 切换保留内容节点和表单值，当前焦点与选区可能因 DOM 移动而结束。
+
+`options` 只放显示效果参数；移除参数恢复核心默认值。React 中替换 `options` 对象，Vue 中也可以修改响应式属性。请给容器设置不透明背景色；示例通过 `background: inherit` 将背景传给 canvas 和场景根节点，确保背景也进入纹理。原生模式会临时将场景移入 canvas，把继承样式放到外层容器，把依赖表单祖先或父选择器的内容放进场景子树。表单、选区和键盘行为遵循上文的交互策略。
 
 ## 配置项
 
@@ -447,6 +457,7 @@ effect.htmlSourceStatus; // 'disabled' | 'native' | 'fallback'
 effect.start();
 effect.stop();
 effect.update({ amount: 2.4 });
+effect.update({ amount: undefined }); // 恢复 amount 的默认值
 effect.resize();
 effect.destroy();
 ```
@@ -494,3 +505,5 @@ pnpm build:playground
 ```
 
 原生交互测试需要支持 HTML-in-Canvas 的浏览器。使用已安装的 Chrome 157+ 时，设置 `PLAYWRIGHT_CHANNEL=chrome` 再运行测试（PowerShell：`$env:PLAYWRIGHT_CHANNEL='chrome'; pnpm test`）。测试覆盖公共创建接口、原生绘制和动态更新、输入/选区/键盘、销毁恢复、DOM 降级及 demo 切换。
+
+测试还会从本 README 提取 React/Vue 封装和页面示例，用真实框架验证 SSR、React StrictMode、动态内容、参数移除、后端切换及异步初始化期间的卸载。框架依赖只用于开发验证，发布的核心没有运行时依赖。
