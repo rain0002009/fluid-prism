@@ -456,6 +456,28 @@ effect.destroy();
 
 ## 开发验证
 
+### 启动 playground
+
+在项目根目录运行 Vite 开发服务器，它会把 TypeScript 编译为浏览器可执行的 JavaScript：
+
+```bash
+pnpm install
+pnpm dev
+```
+
+打开终端显示的地址（默认 `http://localhost:5173/fluid-prism/`）。
+
+使用 `serve` 等普通静态服务器时，先构建，再托管生成的 `dist-playground` 目录：
+
+```bash
+pnpm build:playground
+serve dist-playground
+```
+
+`playground` 是包含 TypeScript 的源码目录。直接运行 `serve playground` 会原样返回 `main.ts`，可能以 `video/mp2t` 响应，导致浏览器拒绝执行模块。构建产物使用相对资源路径，可部署到站点根目录或子目录。
+
+### 检查与测试
+
 ```bash
 pnpm install
 pnpm exec playwright install chromium

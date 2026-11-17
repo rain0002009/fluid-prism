@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { resolve } from 'node:path';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
+import { createServer as createHTTPServer } from 'node:http';
 import { chromium } from 'playwright';
-import { createServer } from 'vite';
+import { build, createServer } from 'vite';
 
 let server;
 let browser;
@@ -212,6 +213,53 @@ test('HTML falls back when WebGL is unavailable or its context is lost', async (
     await lost.evaluate(() => window.effect.destroy());
   } finally {
     await lost.close();
+  }
+});
+
+test('raw playground served with a TypeScript MIME type explains how to start the demo', async () => {
+  const page = await browser.newPage();
+  try {
+    const html = await readFile(new URL('../playground/index.html', import.meta.url), 'utf8');
+    await page.route('**/raw-demo/', route => route.fulfill({ contentType: 'text/html', body: html }));
+    await page.route('**/raw-demo/main.ts', route => route.fulfill({ contentType: 'video/mp2t', body: 'export {};' }));
+    await page.goto(`${origin}/raw-demo/`);
+    await page.locator('#startup-error').waitFor({ state: 'visible', timeout: 3000 });
+    assert.match(await page.locator('#startup-error').textContent(), /pnpm dev/);
+    assert.match(await page.locator('#startup-error').textContent(), /dist-playground/);
+  } finally {
+    await page.close();
+  }
+});
+
+test('built playground runs on a plain static server at root and nested paths', async () => {
+  await build({ logLevel: 'silent' });
+  const staticServer = createHTTPServer(async (req, res) => {
+    const pathname = new URL(req.url, 'http://localhost').pathname;
+    const relative = pathname.replace(/^\/nested-demo\//, '/').slice(1) || 'index.html';
+    if (relative.includes('..')) { res.writeHead(400).end(); return; }
+    try {
+      const contents = await readFile(resolve('dist-playground', relative));
+      res.setHeader('Content-Type', relative.endsWith('.js') ? 'application/javascript' : 'text/html');
+      res.end(contents);
+    } catch { res.writeHead(404).end(); }
+  });
+  await new Promise(resolve => staticServer.listen(0, '127.0.0.1', resolve));
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    for (const path of ['/', '/nested-demo/']) {
+      await page.goto(`http://127.0.0.1:${staticServer.address().port}${path}`);
+      await page.locator('#backend-status').waitFor({ timeout: 5000 });
+      await page.getByText('WEBGL · Native HTML', { exact: false }).waitFor({ timeout: 5000 });
+      assert.equal(await page.locator('#startup-error').isVisible(), false);
+      await page.getByRole('textbox', { name: 'Your name' }).fill('Static server');
+      assert.equal(await page.locator('#greeting').textContent(), 'Hello, Static server.');
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+    await new Promise(resolve => staticServer.close(resolve));
   }
 });
 

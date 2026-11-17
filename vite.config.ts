@@ -1,10 +1,10 @@
 import { defineConfig } from 'vite';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   root: 'playground',
-  base: '/fluid-prism/',
+  base: command === 'build' ? './' : '/fluid-prism/',
   build: {
     outDir: '../dist-playground',
     emptyOutDir: true,
   },
-});
+}));
