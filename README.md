@@ -13,6 +13,8 @@
 
 它会渲染一个全屏 canvas，将鼠标光标速度存入 ping-pong 绘制缓冲区，再经过低分辨率反馈纹理处理，最后对场景纹理施加细微的位移与色散干涉效果。默认使用 WebGL；如果你显式选择 WebGPU，并且当前浏览器支持，也可以切换到 WebGPU 后端。
 
+快速入口：[HTML in Canvas 用法](#html-in-canvas) · [React](#react-用法) · [Vue](#vue-用法) · [配置项](#配置项) · [运行 playground](#启动-playground)
+
 ## 特性
 
 - 默认基于 WebGL 1，无运行时依赖，并支持可选 WebGPU 后端
@@ -29,6 +31,56 @@
 ```bash
 pnpm add fluid-prism
 ```
+
+<a id="html-in-canvas"></a>
+
+## HTML in Canvas 用法
+
+传入已有元素的 `htmlSource`，让浏览器直接把 HTML 和 CSS 绘制到场景纹理中。它使用原生 HTML-in-Canvas，无截图依赖；WebGL 和 WebGPU 都支持。
+
+```html
+<section id="hero" style="background: #f4f1ec; padding: 48px; overflow: auto;">
+  <h1>Real HTML. Liquid light.</h1>
+  <label for="name">Your name</label>
+  <input id="name" value="Prism" />
+  <p>这段文字仍然可以选择、复制。</p>
+</section>
+```
+
+```ts
+import { createFluidPrism } from 'fluid-prism';
+
+const hero = document.querySelector<HTMLElement>('#hero')!;
+const effect = await createFluidPrism({
+  htmlSource: hero,
+  backend: 'webgl', // 也可选择 'webgpu'
+});
+await effect.ready;
+
+console.log(effect.htmlSourceStatus); // 'native' | 'fallback' | 'disabled'
+hero.querySelector('h1')!.textContent = 'Live content'; // 自动重绘
+
+// 可替换、清除 HTML 输入；切换前清除其他输入选项。
+// effect.update({ htmlSource: anotherElement });
+// effect.update({ htmlSource: undefined });
+// effect.destroy(); // 恢复元素原来的位置、drawable 属性及受管理的布局样式
+```
+
+`htmlSource` 与 `source`、`contentRenderer` 互斥。场景根元素会临时移入输出 canvas，宽高按 canvas 的 CSS 尺寸设置，GPU 纹理按 DPR 绘制；给根元素设置背景色，以及适合容器的响应式样式。非全屏场景请使用已有且有明确 CSS 宽高的 canvas，并设置 `fullscreen: false`。容器变化会通过 ResizeObserver 自动同步。
+
+### 交互与降级
+
+- 表单、链接、Tab 导航和选区沿用真实 DOM。悬停交互控件、按下指针、元素获得焦点或场景内存在文字选区时，只停止产生新波纹；已有波纹继续运动并自然消散，画面不会突然切回原图。离开控件、焦点和选区都结束后恢复新波纹。可用 `[tabindex]` 或 `[role="button"]` 标记自定义交互控件。
+- 浏览器的 `updateElementGeometry()` 描述几何矩阵，无法逐像素表示流体 shader 的局部扭曲。交互命中沿用未扭曲的 DOM 位置，残留波纹消散前可能与视觉位置存在差异；拖选从指针按下时停止产生新波纹。
+- 原生能力已在 Chrome 157 发布，其他浏览器及不同 GPU 后端可能尚不支持。本库按所选后端的方法和 canvas 能力检测；不支持或 HTML 上传失败时，隐藏效果 canvas，保留普通 HTML 的输入与选择。`htmlSourceStatus` 可用于展示状态。原生模式下根节点必须是单一 drawable 子树，不支持额外的嵌套 `[drawable]`。
+- `stop()` 停止连续流体动画；原生 DOM 变化仍会通过 `paint` 重绘，保证输入内容可见。`start()` 恢复动画。`autoStart: false` 同样会绘制初始 HTML 和后续 DOM 更新。
+- 不保证跨域图片、iframe、受保护媒体等内容进入纹理；这不是完整页面截图功能。原生模式会改变 DOM 父级，依赖父选择器、继承样式或表单祖先关系的场景，应将所需样式和表单一起放进 `htmlSource`。React/Vue 中建议提供由组件持有的独立场景根节点，并在组件卸载前 `destroy()`。
+
+显式后端创建函数也接受 `htmlSource`；WebGPU 初始化是异步的，使用 `await effect.ready` 等待后端初始化及能力判断。通用 `createFluidPrism()` 的返回 Promise 表示实例已创建，`ready` 表示后端已完成初始化。
+
+本地运行 `pnpm dev` 打开 demo，选择 **HTML in Canvas**，体验输入、保存、计数、选择文字、动态标题及两个后端切换。浏览器无原生能力时会显示降级提示。
+
+官方资料：[HTML-in-Canvas 概览](https://developer.chrome.com/blog/html-in-canvas)、[几何与兼容策略](https://developer.chrome.com/docs/web-platform/html-in-canvas/concepts)。
 
 ## 基础用法
 
@@ -172,54 +224,6 @@ image.onload = async () => {
   });
 };
 ```
-
-## 使用真实 HTML 场景
-
-传入已有元素的 `htmlSource`，让浏览器直接把 HTML 和 CSS 绘制到场景纹理中。它使用原生 HTML-in-Canvas，无截图依赖；WebGL 和 WebGPU 都支持。
-
-```html
-<section id="hero" style="background: #f4f1ec; padding: 48px; overflow: auto;">
-  <h1>Real HTML. Liquid light.</h1>
-  <label for="name">Your name</label>
-  <input id="name" value="Prism" />
-  <p>这段文字仍然可以选择、复制。</p>
-</section>
-```
-
-```ts
-import { createFluidPrism } from 'fluid-prism';
-
-const hero = document.querySelector<HTMLElement>('#hero')!;
-const effect = await createFluidPrism({
-  htmlSource: hero,
-  backend: 'webgl', // 也可选择 'webgpu'
-});
-await effect.ready;
-
-console.log(effect.htmlSourceStatus); // 'native' | 'fallback' | 'disabled'
-hero.querySelector('h1')!.textContent = 'Live content'; // 自动重绘
-
-// 可替换、清除 HTML 输入；切换前清除其他输入选项。
-// effect.update({ htmlSource: anotherElement });
-// effect.update({ htmlSource: undefined });
-// effect.destroy(); // 恢复元素原来的位置、drawable 属性及受管理的布局样式
-```
-
-`htmlSource` 与 `source`、`contentRenderer` 互斥。场景根元素会临时移入输出 canvas，宽高按 canvas 的 CSS 尺寸设置，GPU 纹理按 DPR 绘制；给根元素设置背景色，以及适合容器的响应式样式。非全屏场景请使用已有且有明确 CSS 宽高的 canvas，并设置 `fullscreen: false`。容器变化会通过 ResizeObserver 自动同步。
-
-### 交互与降级
-
-- 表单、链接、Tab 导航和选区沿用真实 DOM。悬停交互控件、按下指针、元素获得焦点或场景内存在文字选区时，只停止产生新波纹；已有波纹继续运动并自然消散，画面不会突然切回原图。离开控件、焦点和选区都结束后恢复新波纹。可用 `[tabindex]` 或 `[role="button"]` 标记自定义交互控件。
-- 浏览器的 `updateElementGeometry()` 描述几何矩阵，无法逐像素表示流体 shader 的局部扭曲。交互命中沿用未扭曲的 DOM 位置，残留波纹消散前可能与视觉位置存在差异；拖选从指针按下时停止产生新波纹。
-- 原生能力已在 Chrome 157 发布，其他浏览器及不同 GPU 后端可能尚不支持。本库按所选后端的方法和 canvas 能力检测；不支持或 HTML 上传失败时，隐藏效果 canvas，保留普通 HTML 的输入与选择。`htmlSourceStatus` 可用于展示状态。原生模式下根节点必须是单一 drawable 子树，不支持额外的嵌套 `[drawable]`。
-- `stop()` 停止连续流体动画；原生 DOM 变化仍会通过 `paint` 重绘，保证输入内容可见。`start()` 恢复动画。`autoStart: false` 同样会绘制初始 HTML 和后续 DOM 更新。
-- 不保证跨域图片、iframe、受保护媒体等内容进入纹理；这不是完整页面截图功能。原生模式会改变 DOM 父级，依赖父选择器、继承样式或表单祖先关系的场景，应将所需样式和表单一起放进 `htmlSource`。React/Vue 中建议提供由组件持有的独立场景根节点，并在组件卸载前 `destroy()`。
-
-显式后端创建函数也接受 `htmlSource`；WebGPU 初始化是异步的，使用 `await effect.ready` 等待后端初始化及能力判断。通用 `createFluidPrism()` 的返回 Promise 表示实例已创建，`ready` 表示后端已完成初始化。
-
-本地运行 `pnpm dev` 打开 demo，选择 **HTML in Canvas**，体验输入、保存、计数、选择文字、动态标题及两个后端切换。浏览器无原生能力时会显示降级提示。
-
-官方资料：[HTML-in-Canvas 概览](https://developer.chrome.com/blog/html-in-canvas)、[几何与兼容策略](https://developer.chrome.com/docs/web-platform/html-in-canvas/concepts)。
 
 ## React 用法
 
