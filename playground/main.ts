@@ -79,7 +79,9 @@ function reportStatus() {
     ? effect.backend.toUpperCase() + ' · 透明叠加，原 HTML 保留交互；关闭叠加可使用原生折射。'
     : sceneSelect.value === 'html'
       ? effect.htmlSourceStatus === 'native'
-        ? effect.backend.toUpperCase() + ' · Native HTML in Canvas. Controls pause new ripples; existing trails fade naturally.'
+        ? effect.backend.toUpperCase() + (settingsPanel.getOptions().pauseOnInteraction
+          ? ' · Native HTML in Canvas. Controls pause new ripples; existing trails fade naturally.'
+          : ' · Native HTML in Canvas. Ripples continue during interaction.')
         : '普通 HTML 降级 · 当前浏览器或后端无法绘制 HTML，表单与文字选择仍可使用。'
       : effect.backend.toUpperCase() + ' · 2D canvas scene.');
 }

@@ -136,6 +136,52 @@ test('reduced motion and HTML interaction block injections while content can sti
   } finally { await page.close(); }
 });
 
+for (const pauseOnInteraction of [true, false]) {
+  test(`pauseOnInteraction=${pauseOnInteraction} governs control pointers, active interaction, and queued splats`, async () => {
+    const page = await fixture();
+    try {
+      await harness(page, { pauseOnInteraction });
+      const result = await page.evaluate(() => {
+        h.options.htmlSource = document.querySelector('#scene');
+        h.step();
+        const button = document.querySelector('button');
+        for (const x of [100, 150]) button.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: x, clientY: 100, pointerId: 1 }));
+        h.step();
+        const control = h.frames.at(-1).strokes.length > 0;
+        h.runtime.stop(); h.runtime.start();
+        h.runtime.splat(.5, .5, 123, 0);
+        h.interacting = true; h.step();
+        const queued = h.frames.at(-1).strokes.some(stroke => stroke.dx === 123);
+        h.runtime.splat(.5, .5, 456, 0); h.step();
+        const api = h.frames.at(-1).strokes.some(stroke => stroke.dx === 456);
+        h.pointer('pointerdown', 100, 100); h.pointer('pointermove', 150, 100); h.step();
+        const interactingPointer = h.frames.at(-1).strokes.length > 0;
+        h.reduced(true); h.runtime.splat(.5, .5, 20, 0); h.pointer('pointerdown', 100, 100); h.step();
+        return { control, queued, api, interactingPointer, reduced: h.frames.at(-1).strokes.length };
+      });
+      assert.deepEqual(result, { control: !pauseOnInteraction, queued: !pauseOnInteraction, api: !pauseOnInteraction, interactingPointer: !pauseOnInteraction, reduced: 0 });
+    } finally { await page.close(); }
+  });
+}
+
+test('pauseOnInteraction can change at runtime and undefined restores interaction protection', async () => {
+  const page = await fixture();
+  try {
+    await harness(page);
+    const result = await page.evaluate(() => {
+      h.interacting = true;
+      const samples = [];
+      for (const value of [undefined, false, true, false, undefined]) {
+        h.options = h.resolveOptions({ ...h.options, pauseOnInteraction: value });
+        h.runtime.update(); h.runtime.splat(.5, .5, 20, 0); h.step();
+        samples.push([h.options.pauseOnInteraction, h.frames.at(-1).strokes.length]);
+      }
+      return samples;
+    });
+    assert.deepEqual(result, [[true, 0], [false, 1], [true, 0], [false, 1], [true, 0]]);
+  } finally { await page.close(); }
+});
+
 test('sub-frame decay, top-left packing, resolution budgets, and high-refresh simulation limits', async () => {
   const page = await fixture();
   try {
@@ -297,6 +343,9 @@ test('playground exposes the new controls and preserves ordinary HTML through ov
     const overlay = page.locator('#setting-overlay');
     await overlay.check();
     await page.getByText('透明叠加，原 HTML', { exact: false }).waitFor();
+    const pauseOnInteraction = page.locator('#setting-pauseOnInteraction');
+    assert.equal(await pauseOnInteraction.isChecked(), true);
+    await pauseOnInteraction.uncheck();
     await page.locator('#setting-rainbow').uncheck();
     await page.locator('#setting-color').fill('#ff0000');
     await page.getByRole('textbox', { name: 'Your name' }).fill('Overlay input');
@@ -312,6 +361,7 @@ test('playground exposes the new controls and preserves ordinary HTML through ov
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.getByRole('button', { name: '恢复默认' }).click();
     assert.equal(await overlay.isChecked(), false);
+    assert.equal(await pauseOnInteraction.isChecked(), true);
     assert.equal(await page.locator('#setting-rainbow').isChecked(), true);
     assert.equal(await page.locator('#setting-radius').inputValue(), '24');
     assert.equal(await page.getByRole('textbox', { name: 'Your name' }).inputValue(), 'Overlay input');

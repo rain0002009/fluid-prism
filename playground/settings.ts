@@ -42,6 +42,7 @@ const toggles = [
   { key: 'overlay', label: '只叠加颜色', hint: '在内容上方显示颜色，背景和文字不扭曲' },
   { key: 'autoSleep', label: '静止时节省性能', hint: '静态画面的波纹消散后暂停，移动鼠标时恢复' },
   { key: 'respectReducedMotion', label: '跟随系统减少动画', hint: '系统开启减少动态效果时，不产生新波纹' },
+  { key: 'pauseOnInteraction', label: '交互时暂停新波纹', hint: '关闭后，悬停控件、按下、聚焦及选中文字时也会产生波纹' },
 ] as const;
 type ToggleSetting = typeof toggles[number]['key'];
 type VisualSettings = Record<Exclude<NumericSetting, 'radius'>, number> & Record<ToggleSetting, boolean> & { radius: number | 'auto'; color: [number, number, number] };
@@ -53,6 +54,7 @@ const defaults: VisualSettings = {
   overlay: DEFAULTS.overlay,
   autoSleep: DEFAULTS.autoSleep,
   respectReducedMotion: DEFAULTS.respectReducedMotion,
+  pauseOnInteraction: DEFAULTS.pauseOnInteraction,
   color: [...DEFAULTS.color],
 };
 

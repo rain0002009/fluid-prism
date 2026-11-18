@@ -70,7 +70,7 @@ hero.querySelector('h1')!.textContent = 'Live content'; // 自动重绘
 
 ### 交互与降级
 
-- 表单、链接、Tab 导航和选区沿用真实 DOM。悬停交互控件、按下指针、元素获得焦点或场景内存在文字选区时，只停止产生新波纹；已有波纹继续运动并自然消散，画面不会突然切回原图。离开控件、焦点和选区都结束后恢复新波纹。可用 `[tabindex]` 或 `[role="button"]` 标记自定义交互控件。
+- 表单、链接、Tab 导航和选区沿用真实 DOM。默认 `pauseOnInteraction: true`：悬停交互控件、按下指针、元素获得焦点或场景内存在文字选区时，只停止产生新波纹；已有波纹继续运动并自然消散，画面不会突然切回原图。离开控件、焦点和选区都结束后恢复新波纹。设置 `pauseOnInteraction: false` 可在这些交互期间继续接受指针及 `splat()` 注入，不影响控件本身的事件。可用 `[tabindex]` 或 `[role="button"]` 标记自定义交互控件。
 - 浏览器的 `updateElementGeometry()` 描述几何矩阵，无法逐像素表示流体 shader 的局部扭曲。交互命中沿用未扭曲的 DOM 位置，残留波纹消散前可能与视觉位置存在差异；拖选从指针按下时停止产生新波纹。
 - 原生能力已在 Chrome 157 发布，其他浏览器及不同 GPU 后端可能尚不支持。本库按所选后端的方法和 canvas 能力检测；不支持或 HTML 上传失败时，隐藏效果 canvas，保留普通 HTML 的输入与选择。`htmlSourceStatus` 可用于展示状态。原生模式下根节点必须是单一 drawable 子树，不支持额外的嵌套 `[drawable]`。
 - `stop()` 停止连续流体动画；原生 DOM 变化仍会通过 `paint` 重绘，保证输入内容可见。`start()` 恢复动画。`autoStart: false` 同样会绘制初始 HTML 和后续 DOM 更新。
@@ -81,6 +81,14 @@ hero.querySelector('h1')!.textContent = 'Live content'; // 自动重绘
 本地运行 `pnpm dev` 打开 demo，选择 **HTML in Canvas**，体验输入、保存、计数、选择文字、动态标题及两个后端切换。浏览器无原生能力时会显示降级提示。
 
 官方资料：[HTML-in-Canvas 概览](https://developer.chrome.com/blog/html-in-canvas)、[几何与兼容策略](https://developer.chrome.com/docs/web-platform/html-in-canvas/concepts)。
+
+允许交互期间继续产生波纹，也支持运行时切换：
+
+```ts
+const effect = await createFluidPrism({ htmlSource: hero, pauseOnInteraction: false });
+effect.update({ pauseOnInteraction: true }); // 恢复交互保护
+effect.update({ pauseOnInteraction: undefined }); // 恢复默认值 true
+```
 
 ## 基础用法
 
@@ -348,6 +356,7 @@ const props = withDefaults(defineProps<EffectProps>(), {
   backend: 'webgl',
   autoSleep: undefined,
   respectReducedMotion: undefined,
+  pauseOnInteraction: undefined,
   rainbow: undefined,
   pastelFilm: undefined, // 缺省时沿用核心默认值，避免 Vue 将 Boolean prop 转成 false。
 });
@@ -443,7 +452,7 @@ const amount = ref(3);
 - 默认启用 `autoSleep`：静态场景在波纹衰减后停止 RAF，指针、`splat()`、参数更新及原生 HTML 的 `paint` 会唤醒。canvas、视频和 `contentRenderer` 持续更新内容；`autoSleep: false` 保持连续模拟。任一衰减值设为 `1` 时，已产生的波纹不会按超时休眠。
 - 页面进入后台或 canvas 离开视口时暂停，恢复可见后继续；暂停时间不计入模拟。`stop()` 保持手动停止状态，`start()` 恢复；停止期间原生 HTML 仍可重绘。
 - 默认尊重 `prefers-reduced-motion`，不接受新扰动，已有波纹自然衰减。确有需要时可设置 `respectReducedMotion: false`。
-- 支持多指输入，仅接收 canvas 边界内的指针；`radius: 'auto'` 默认沿用原版随速度变化的笔触宽度，数字值则表示固定 CSS 像素半径，`force` 控制冲量。任一设为 `0` 时禁用新扰动。HTML 控件、焦点及选区交互期间忽略新注入，已有波纹继续衰减。
+- 支持多指输入，仅接收 canvas 边界内的指针；`radius: 'auto'` 默认沿用原版随速度变化的笔触宽度，数字值则表示固定 CSS 像素半径，`force` 控制冲量。任一设为 `0` 时禁用新扰动。默认在 HTML 控件、焦点及选区交互期间忽略新注入，已有波纹继续衰减；`pauseOnInteraction: false` 可关闭此限制。
 - 衰减参数表示每个模拟步保留的比例；高刷新率下将模拟限制在约 60 次/秒，低于 60fps 时每帧沿用原版的一步衰减，不因帧间隔变长而加速消散。自动休眠等待足够的模拟步完成后才停止。DPR 同时受设备、页面缩放、GPU 纹理尺寸和每张缓冲区约 1600 万像素预算限制。
 
 程序注入波纹：
@@ -453,7 +462,7 @@ const effect = await createFluidPrism({ radius: 32, force: 1.2 });
 effect.splat(0.5, 0.5, 60, -30);
 ```
 
-`x/y` 是 `[0, 1]` 的归一化位置，原点在左上角；`dx/dy` 是 CSS 像素冲量，向右、向下为正。非法坐标或非有限数值会抛出 `RangeError`。队列最多保留最近 64 次注入，每帧最多处理 8 个输入，API 输入预留至少一个名额。初始化、手动停止及不可见期间可以排队，恢复后处理；减少动态效果或 HTML 交互期间忽略新注入。
+`x/y` 是 `[0, 1]` 的归一化位置，原点在左上角；`dx/dy` 是 CSS 像素冲量，向右、向下为正。非法坐标或非有限数值会抛出 `RangeError`。队列最多保留最近 64 次注入，每帧最多处理 8 个输入，API 输入预留至少一个名额。初始化、手动停止及不可见期间可以排队，恢复后处理；减少动态效果期间，或启用 `pauseOnInteraction` 且正在进行 HTML 交互时，忽略新注入。
 
 `radius: 'auto'` 时，指针沿用原版的速度平滑、速度半径和 100 模拟像素上限；程序 `splat()` 使用 24 CSS 像素半径。设置数字半径会显式切换为固定宽度笔触。
 
@@ -490,6 +499,7 @@ const effect = await createFluidPrism({
 | `force` | `number` | `1` | 输入冲量倍数；`0` 禁用新扰动。 |
 | `autoSleep` | `boolean` | `true` | 静态场景在波纹衰减后休眠。 |
 | `respectReducedMotion` | `boolean` | `true` | 尊重系统减少动态效果偏好。 |
+| `pauseOnInteraction` | `boolean` | `true` | HTML 控件悬停、指针按下、聚焦及选区交互时暂停新波纹；设为 `false` 可继续指针和 `splat()` 注入。 |
 | `color` | `[number, number, number]` | `[0.145, 0.239, 0.867]` | 固定品牌色，sRGB 分量 `[0, 1]`。 |
 | `rainbow` | `boolean` | `true` | 随流动变色；关闭后使用固定颜色。 |
 | `blend` | `number` | `0.15` | 颜色覆盖强度，范围 `[0, 1]`；越大，固定颜色或叠加颜色越浓。 |

@@ -29,6 +29,8 @@ export interface FluidPrismOptions {
   autoSleep?: boolean;
   /** Respect the system reduced-motion preference. Defaults to true. */
   respectReducedMotion?: boolean;
+  /** Pause new pointer/API ripples during HTML interaction. Defaults to true. */
+  pauseOnInteraction?: boolean;
   /** Brand tint as sRGB components in [0, 1]. */
   color?: [number, number, number];
   /** Use the original iridescent colors instead of the fixed tint. Defaults to true. */
@@ -102,6 +104,7 @@ export const DEFAULTS = {
   force: 1,
   autoSleep: true,
   respectReducedMotion: true,
+  pauseOnInteraction: true,
   color: [0.145, 0.239, 0.867] as [number, number, number],
   rainbow: true,
   blend: 0.15,

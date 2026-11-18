@@ -74,7 +74,7 @@ export class FluidRuntime {
     if (![x, y, dx, dy].every(Number.isFinite) || x < 0 || x > 1 || y < 0 || y > 1) {
       throw new RangeError('splat requires x/y in [0, 1] and finite dx/dy.');
     }
-    if (this.reduced || this.interacting() || !this.options().radius || !this.options().force) return;
+    if (this.reduced || this.interactionPaused || !this.options().radius || !this.options().force) return;
     if (this.queued.length === MAX_SPLATS) this.queued.shift();
     this.queued.push([x, y, dx, dy]);
     this.activate();
@@ -90,6 +90,7 @@ export class FluidRuntime {
   }
 
   private get reduced() { return this.options().respectReducedMotion && this.motion.matches; }
+  private get interactionPaused() { return this.options().pauseOnInteraction && this.interacting(); }
   private get suspended() { return !this.visible || document.hidden; }
   private get dynamic() {
     const options = this.options();
@@ -117,7 +118,7 @@ export class FluidRuntime {
   private down = (event: PointerEvent) => { this.rect = null; this.move(event, true); };
   private move = (event: PointerEvent, down = false) => {
     if (this.destroyed || !this.enabled || this.suspended || this.reduced || !this.options().radius || !this.options().force) return;
-    if (this.interacting() || (this.options().htmlSource && event.target instanceof Element && event.target.closest(interactive))) {
+    if (this.interactionPaused || (this.options().pauseOnInteraction && this.options().htmlSource && event.target instanceof Element && event.target.closest(interactive))) {
       this.pointers.delete(event.pointerId);
       return;
     }
@@ -154,8 +155,8 @@ export class FluidRuntime {
     const step = Math.min(1, dt);
     if (simulate) this.simulationTime = 0;
     const strokes: Stroke[] = [];
-    if (this.interacting()) this.queued.length = 0;
-    if (simulate && !this.reduced && !this.interacting()) {
+    if (this.interactionPaused) this.queued.length = 0;
+    if (simulate && !this.reduced && !this.interactionPaused) {
       const budget = MAX_STROKES - (this.queued.length ? 1 : 0);
       const smoothing = 1 - Math.pow(0.45, step);
       for (const [id, pointer] of [...this.pointers]) {
@@ -178,7 +179,7 @@ export class FluidRuntime {
         const [x, y, dx, dy] = this.queued.shift()!;
         strokes.push({ x: x * rect.width, y: y * rect.height, tx: x * rect.width, ty: y * rect.height, dx, dy });
       }
-    } else if (!this.enabled || this.reduced || this.interacting()) this.resetPointers();
+    } else if (!this.enabled || this.reduced || this.interactionPaused) this.resetPointers();
     this.rect = null; // At most one layout read per frame, including transformed containers.
     this.dirty = false;
     this.render({ now, dt, simulate, strokes });

@@ -1,6 +1,6 @@
 {
   "name": "fluid-prism",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "A lightweight WebGL cursor-driven fluid refraction and chromatic ripple effect.",
   "type": "module",
   "main": "./dist/index.cjs",
