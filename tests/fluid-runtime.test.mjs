@@ -136,7 +136,7 @@ test('reduced motion and HTML interaction block injections while content can sti
   } finally { await page.close(); }
 });
 
-test('decay uses elapsed time, packing uses top-left coordinates, and resolution respects budgets', async () => {
+test('sub-frame decay, top-left packing, resolution budgets, and high-refresh simulation limits', async () => {
   const page = await fixture();
   try {
     await harness(page);
@@ -155,11 +155,57 @@ test('decay uses elapsed time, packing uses top-left coordinates, and resolution
     assert.ok(result.decay < 1e-6);
     assert.equal(result.dt, .5);
     assert.deepEqual(result.position, [20, 135, 12, 1]);
-    assert.ok(Math.abs(result.velocity[0] - .064) < 1e-6 && Math.abs(result.velocity[1] + .128) < 1e-6);
+    assert.ok(Math.abs(result.velocity[0] - .032) < 1e-6 && Math.abs(result.velocity[1] + .064) < 1e-6);
     assert.ok(result.dimension <= 1024 && result.pixels <= 16_777_216);
     assert.equal(result.invalid, 2);
     assert.equal(result.highRefresh[0], 60);
     assert.ok(result.highRefresh[1] > .999);
+  } finally { await page.close(); }
+});
+
+test('slow frames preserve the original tail decay and pointer easing until the simulation settles', async () => {
+  const page = await fixture();
+  try {
+    await harness(page, { velocityDissipation: .8, weight1Dissipation: .8, weight2Dissipation: .8 });
+    const result = await page.evaluate(() => {
+      h.pointer('pointermove', 100, 100); h.runtime.splat(.25, .25, 0, 0); h.step();
+      h.pointer('pointermove', 160, 100); h.step(1000 / 30);
+      const frame = h.frames.at(-1);
+      const packed = h.packStrokes(frame, h.options, 1, 100, 75);
+      h.pointer('pointercancel', 160, 100);
+      for (let i = 0; i < 30; i++) h.step(1000 / 30);
+      const stillSettling = h.pending();
+      for (let i = 0; i < 30; i++) h.step(1000 / 30);
+      return { decay: packed[5], simulationStep: packed[11], elapsed: frame.dt, dx: frame.strokes[0].dx, speed: frame.strokes[0].speed, stillSettling, settled: h.pending() };
+    });
+    assert.ok(Math.abs(result.decay - .8) < 1e-6, JSON.stringify(result));
+    assert.equal(result.simulationStep, 1);
+    assert.ok(Math.abs(result.elapsed - 2) < 1e-6);
+    assert.ok(Math.abs(result.dx - 33) < 1e-6 && Math.abs(result.speed - 9.24) < 1e-6, JSON.stringify(result));
+    assert.equal(result.stillSettling, 1);
+    assert.equal(result.settled, 0);
+  } finally { await page.close(); }
+});
+
+test('default pointer strokes preserve the original speed-dependent width in simulation pixels', async () => {
+  const page = await fixture();
+  try {
+    await harness(page);
+    const samples = await page.evaluate(() => {
+      h.pointer('pointermove', 100, 100); h.step();
+      let x = 100, speed = 0;
+      const samples = [];
+      for (const target of [160, 220, 280, 300, 300, 300]) {
+        h.pointer('pointermove', target, 100); h.step();
+        const dx = (target - x) * .55; x += dx;
+        speed = speed * .72 + Math.abs(dx) * .28;
+        const frame = h.frames.at(-1);
+        const packed = h.packStrokes(frame, h.options, 1, 100, 75);
+        samples.push({ expected: Math.min(100, speed), actual: packed[14] });
+      }
+      return samples;
+    });
+    for (const sample of samples) assert.ok(Math.abs(sample.actual - sample.expected) < 1e-4, JSON.stringify(samples));
   } finally { await page.close(); }
 });
 
@@ -182,7 +228,7 @@ test('the last queued splat settles before sleep, zero inputs disable injection,
       const defaults = [h.options.radius, h.options.rainbow, h.options.autoSleep, h.options.respectReducedMotion];
       return { last, decay, slept, disabled, dynamic, defaults };
     });
-    assert.deepEqual(result, { last: 1, decay: true, slept: 0, disabled: 0, dynamic: [false, 1], defaults: [24, true, true, true] });
+    assert.deepEqual(result, { last: 1, decay: true, slept: 0, disabled: 0, dynamic: [false, 1], defaults: ['auto', true, true, true] });
   } finally { await page.close(); }
 });
 
@@ -256,7 +302,7 @@ test('playground exposes the new controls and preserves ordinary HTML through ov
     await page.getByRole('textbox', { name: 'Your name' }).fill('Overlay input');
     assert.equal(await page.locator('#greeting').textContent(), 'Hello, Overlay input.');
     assert.equal(await page.locator('#html-scene').evaluate(el => el.parentElement.tagName), 'BODY');
-    await page.getByRole('button', { name: '注入中心波纹' }).click();
+    await page.getByRole('button', { name: '在中央产生波纹' }).click();
     await page.locator('#visual-settings').evaluate(el => { el.scrollTop = 0; });
     await page.screenshot({ path: '.scratch/validation/runtime-settings-desktop.png' });
     await page.setViewportSize({ width: 390, height: 844 });

@@ -19,20 +19,20 @@ scene.querySelector<HTMLButtonElement>('#increment')!.addEventListener('click', 
 const controls = document.createElement('div');
 controls.innerHTML = `
   <label style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:999px;background:rgba(255,255,255,.7);backdrop-filter:blur(16px);box-shadow:0 12px 40px rgba(0,0,0,.08);font:600 13px/1.2 Inter, Arial, sans-serif;color:#111;">
-    <span>Renderer</span>
+    <span>渲染方式</span>
     <select id="backend-select" style="appearance:none;border:0;background:transparent;font:inherit;color:inherit;padding-right:10px;outline:none;cursor:pointer;">
       <option value="webgl">WebGL</option>
       <option value="webgpu">WebGPU</option>
     </select>
   </label>
-  <label class="scene-control">Scene
-    <select id="scene-select" aria-label="Scene">
-      <option value="html">HTML in Canvas</option>
-      <option value="canvas">2D canvas</option>
+  <label class="scene-control">演示内容
+    <select id="scene-select" aria-label="演示内容">
+      <option value="html">HTML 场景</option>
+      <option value="canvas">2D 画布</option>
     </select>
   </label>
-  <button id="change-title" type="button">Update HTML title</button>
-  <button id="inject-splat" type="button">注入中心波纹</button>
+  <button id="change-title" type="button">更新标题</button>
+  <button id="inject-splat" type="button">在中央产生波纹</button>
   <div id="backend-status" style="margin-top:10px;padding:10px 14px;border-radius:16px;background:rgba(17,17,17,.72);color:#fff;font:500 12px/1.45 Inter, Arial, sans-serif;max-width:320px;"></div>
 `;
 

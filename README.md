@@ -316,7 +316,7 @@ export function Hero() {
 
   return (
     <>
-      <label>折射强度 <input type="range" min="0" max="10" step="0.1"
+      <label>画面扭曲强度 <input type="range" min="0" max="10" step="0.1"
         value={amount} onChange={event => setAmount(Number(event.target.value))} /></label>
       <FluidPrism amount={amount} pastelFilm style={{ height: 480, background: '#f4f1ec' }}>
         <section style={{ padding: 32 }}>
@@ -416,7 +416,7 @@ const amount = ref(3);
 </script>
 
 <template>
-  <label>折射强度 <input v-model.number="amount" type="range" min="0" max="10" step="0.1" /></label>
+  <label>画面扭曲强度 <input v-model.number="amount" type="range" min="0" max="10" step="0.1" /></label>
   <FluidPrism :amount="amount" pastel-film style="height: 480px; background: #f4f1ec">
     <section style="padding: 32px">
       <h1>Hello, {{ name }}</h1>
@@ -443,8 +443,8 @@ const amount = ref(3);
 - 默认启用 `autoSleep`：静态场景在波纹衰减后停止 RAF，指针、`splat()`、参数更新及原生 HTML 的 `paint` 会唤醒。canvas、视频和 `contentRenderer` 持续更新内容；`autoSleep: false` 保持连续模拟。任一衰减值设为 `1` 时，已产生的波纹不会按超时休眠。
 - 页面进入后台或 canvas 离开视口时暂停，恢复可见后继续；暂停时间不计入模拟。`stop()` 保持手动停止状态，`start()` 恢复；停止期间原生 HTML 仍可重绘。
 - 默认尊重 `prefers-reduced-motion`，不接受新扰动，已有波纹自然衰减。确有需要时可设置 `respectReducedMotion: false`。
-- 支持多指输入，仅接收 canvas 边界内的指针；`radius` 单位为 CSS 像素，`force` 控制冲量。任一设为 `0` 时禁用新扰动。HTML 控件、焦点及选区交互期间忽略新注入，已有波纹继续衰减。
-- 衰减参数表示每个 60Hz 基准帧的保留比例，实际按帧间时间换算；DPR 同时受设备、页面缩放、GPU 纹理尺寸和每张缓冲区约 1600 万像素预算限制。
+- 支持多指输入，仅接收 canvas 边界内的指针；`radius: 'auto'` 默认沿用原版随速度变化的笔触宽度，数字值则表示固定 CSS 像素半径，`force` 控制冲量。任一设为 `0` 时禁用新扰动。HTML 控件、焦点及选区交互期间忽略新注入，已有波纹继续衰减。
+- 衰减参数表示每个模拟步保留的比例；高刷新率下将模拟限制在约 60 次/秒，低于 60fps 时每帧沿用原版的一步衰减，不因帧间隔变长而加速消散。自动休眠等待足够的模拟步完成后才停止。DPR 同时受设备、页面缩放、GPU 纹理尺寸和每张缓冲区约 1600 万像素预算限制。
 
 程序注入波纹：
 
@@ -454,6 +454,8 @@ effect.splat(0.5, 0.5, 60, -30);
 ```
 
 `x/y` 是 `[0, 1]` 的归一化位置，原点在左上角；`dx/dy` 是 CSS 像素冲量，向右、向下为正。非法坐标或非有限数值会抛出 `RangeError`。队列最多保留最近 64 次注入，每帧最多处理 8 个输入，API 输入预留至少一个名额。初始化、手动停止及不可见期间可以排队，恢复后处理；减少动态效果或 HTML 交互期间忽略新注入。
+
+`radius: 'auto'` 时，指针沿用原版的速度平滑、速度半径和 100 模拟像素上限；程序 `splat()` 使用 24 CSS 像素半径。设置数字半径会显式切换为固定宽度笔触。
 
 固定品牌色与透明叠加：
 
@@ -484,26 +486,26 @@ const effect = await createFluidPrism({
 | `dpr` | `number` | `1.5` | 最大设备像素比。 |
 | `paintScale` | `number` | `0.25` | 绘制缓冲区缩放比例。 |
 | `lowScale` | `number` | `0.125` | 低分辨率反馈缓冲区缩放比例。 |
-| `radius` | `number` | `24` | 指针和 splat 半径，单位 CSS 像素；`0` 禁用新扰动。 |
+| `radius` | `number` 或 `'auto'` | `'auto'` | 默认随速度变化的原版笔触；数字为固定 CSS 像素半径，`0` 禁用新扰动。 |
 | `force` | `number` | `1` | 输入冲量倍数；`0` 禁用新扰动。 |
 | `autoSleep` | `boolean` | `true` | 静态场景在波纹衰减后休眠。 |
 | `respectReducedMotion` | `boolean` | `true` | 尊重系统减少动态效果偏好。 |
 | `color` | `[number, number, number]` | `[0.145, 0.239, 0.867]` | 固定品牌色，sRGB 分量 `[0, 1]`。 |
-| `rainbow` | `boolean` | `true` | 彩虹色彩；关闭后使用固定颜色。 |
-| `blend` | `number` | `0.15` | 染色/叠加透明度倍数，范围 `[0, 1]`。 |
+| `rainbow` | `boolean` | `true` | 随流动变色；关闭后使用固定颜色。 |
+| `blend` | `number` | `0.15` | 颜色覆盖强度，范围 `[0, 1]`；越大，固定颜色或叠加颜色越浓。 |
 | `overlay` | `boolean` | `false` | 输出透明色层，HTML 保留在原 DOM。 |
-| `amount` | `number` | `3` | 位移强度。 |
-| `rgbShift` | `number` | `0.5` | RGB 干涉相位。 |
-| `multiplier` | `number` | `5` | 位移乘数。 |
-| `colorMultiplier` | `number` | `10` | 油膜色彩强度。 |
-| `shade` | `number` | `1.25` | 整体颜色明暗系数。 |
-| `pushStrength` | `number` | `25` | 反馈推动强度。 |
-| `velocityDissipation` | `number` | `0.975` | 速度衰减。 |
-| `weight1Dissipation` | `number` | `0.955` | 新鲜波纹衰减。 |
-| `weight2Dissipation` | `number` | `0.86` | 长尾拖影衰减。 |
-| `curlScale` | `number` | `0.02` | Curl 噪声缩放。 |
-| `curlStrength` | `number` | `3` | Curl 噪声强度。 |
-| `pastelFilm` | `boolean` | `true` | 在浅色背景上添加轻微粉彩膜效果。 |
+| `amount` | `number` | `3` | 画面扭曲强度；越大，背景扭曲越明显。 |
+| `rgbShift` | `number` | `0.5` | 流动颜色搭配，改变颜色组合而非浓淡。 |
+| `multiplier` | `number` | `5` | 扭曲强度倍率，与 `amount` 相乘。 |
+| `colorMultiplier` | `number` | `10` | 流动色彩强度；越大，颜色越明显。 |
+| `shade` | `number` | `1.25` | 色彩强度倍率，与 `colorMultiplier` 相乘；不调整背景亮度。 |
+| `pushStrength` | `number` | `25` | 流动扩散力度；越大，已有波纹沿流动方向移动得越远。 |
+| `velocityDissipation` | `number` | `0.975` | 流动持久度；越大，流动减速越慢。 |
+| `weight1Dissipation` | `number` | `0.955` | 波纹持久度；越大，主要波纹消散越慢。 |
+| `weight2Dissipation` | `number` | `0.86` | 余波持久度；越大，较淡的余波保留越久。 |
+| `curlScale` | `number` | `0.02` | 旋涡密度；越大，旋涡越细密。 |
+| `curlStrength` | `number` | `3` | 旋涡力度；越大，流动中的卷曲越明显。 |
+| `pastelFilm` | `boolean` | `true` | 淡彩薄膜效果，在浅色背景上增加柔和淡彩；需开启 `rainbow` 并关闭 `overlay`。 |
 | `backgroundColor` | `string` | `#f4f1ec` | 场景兜底背景色。 |
 | `autoStart` | `boolean` | `true` | 自动启动渲染循环。 |
 | `hideCursor` | `boolean` | `false` | 在 canvas 上将鼠标光标设为 none。 |
@@ -545,7 +547,7 @@ pnpm dev
 
 打开终端显示的地址（默认 `http://localhost:5173/fluid-prism/`）。
 
-playground 的“效果设置”面板支持实时调整折射、品牌色、输入半径/力度、流动、拖尾及画面精度，提供彩虹、透明叠加、休眠和减少动态效果开关，并可点击按钮注入中心波纹。面板显示当前值，支持恢复默认；切换后端或场景保留设置。移动端默认折叠，点击面板标题展开。
+playground 的“效果设置”面板支持实时调整画面扭曲、固定颜色、波纹大小和力度、流动持续程度及清晰度，提供“随流动变色”“淡彩薄膜效果”“只叠加颜色”等开关，并可点击按钮在中央产生波纹。每个参数附有作用说明，面板显示当前值并支持恢复默认；切换后端或场景保留设置。移动端默认折叠，点击面板标题展开。
 
 使用 `serve` 等普通静态服务器时，先构建，再托管生成的 `dist-playground` 目录：
 

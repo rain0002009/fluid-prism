@@ -1,6 +1,6 @@
 import type { ResolvedFluidPrismOptions } from './shared';
 
-export interface Stroke { x: number; y: number; tx: number; ty: number; dx: number; dy: number }
+export interface Stroke { x: number; y: number; tx: number; ty: number; dx: number; dy: number; speed?: number }
 export interface FluidFrame { now: number; dt: number; simulate: boolean; strokes: Stroke[] }
 const MAX_SPLATS = 64;
 export const MAX_STROKES = 8;
@@ -17,7 +17,7 @@ export class FluidRuntime {
   private simulationTime = 0;
   private remaining = 0;
   private rect: DOMRect | null = null;
-  private pointers = new Map<number, Stroke>();
+  private pointers = new Map<number, Stroke & { speed: number }>();
   private queued: [number, number, number, number][] = [];
   private listeners = new AbortController();
   private motion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -132,7 +132,7 @@ export class FluidRuntime {
     if (previous && !down) { previous.tx = x; previous.ty = y; }
     else {
       if (this.pointers.size === MAX_STROKES) this.pointers.delete(this.pointers.keys().next().value!);
-      this.pointers.set(event.pointerId, { x, y, tx: x, ty: y, dx: 0, dy: 0 });
+      this.pointers.set(event.pointerId, { x, y, tx: x, ty: y, dx: 0, dy: 0, speed: 0 });
     }
     if (down) this.splat(x / rect.width, y / rect.height, 1, 1);
     if (previous || down) this.activate();
@@ -151,19 +151,22 @@ export class FluidRuntime {
     this.simulationTime = active ? this.simulationTime + elapsed : 0;
     const simulate = active && this.simulationTime >= 1 - 1e-6;
     const dt = simulate ? this.simulationTime : elapsed;
+    const step = Math.min(1, dt);
     if (simulate) this.simulationTime = 0;
     const strokes: Stroke[] = [];
     if (this.interacting()) this.queued.length = 0;
     if (simulate && !this.reduced && !this.interacting()) {
       const budget = MAX_STROKES - (this.queued.length ? 1 : 0);
-      const smoothing = 1 - Math.pow(0.45, dt);
+      const smoothing = 1 - Math.pow(0.45, step);
       for (const [id, pointer] of [...this.pointers]) {
         if (strokes.length >= budget) break;
         const dx = (pointer.tx - pointer.x) * smoothing + pointer.dx;
         const dy = (pointer.ty - pointer.y) * smoothing + pointer.dy;
+        const retention = Math.pow(0.72, step);
+        pointer.speed = pointer.speed * retention + Math.hypot(dx, dy) * (1 - retention);
         pointer.dx = pointer.dy = 0;
         if (Math.hypot(dx, dy) < 0.05) continue;
-        strokes.push({ x: pointer.x, y: pointer.y, tx: pointer.x + dx, ty: pointer.y + dy, dx, dy });
+        strokes.push({ x: pointer.x, y: pointer.y, tx: pointer.x + dx, ty: pointer.y + dy, dx, dy, speed: pointer.speed });
         pointer.x += dx;
         pointer.y += dy;
         // Rotate active pointers so the API reservation cannot starve one finger.
@@ -180,7 +183,7 @@ export class FluidRuntime {
     this.dirty = false;
     this.render({ now, dt, simulate, strokes });
     if (strokes.length) this.remaining = this.idleDuration();
-    else if (simulate) this.remaining = Math.max(0, this.remaining - dt * 1000 / 60);
+    else if (simulate) this.remaining = Math.max(0, this.remaining - step * 1000 / 60);
     if (this.dirty || (this.enabled && (this.remaining > 0 || this.queued.length > 0 || this.dynamic || !options.autoSleep))) this.schedule();
     else this.last = 0;
   };
@@ -188,15 +191,21 @@ export class FluidRuntime {
 
 /** Shared buffer layout: size, dissipation, flow parameters, then 8 (from,to,velocity) records. */
 export function packStrokes(frame: FluidFrame, options: ResolvedFluidPrismOptions, dpr: number, width: number, height: number) {
+  // Preserve the original fade per rendered step when rendering falls below 60Hz.
+  const step = Math.min(1, frame.dt);
   const data = new Float32Array(12 + MAX_STROKES * 12);
   data.set([width, height, 0, 0,
-    Math.pow(options.velocityDissipation, frame.dt), Math.pow(options.weight1Dissipation, frame.dt), Math.pow(options.weight2Dissipation, frame.dt), 0,
-    options.pushStrength * frame.dt, options.curlScale, options.curlStrength * frame.dt, frame.dt]);
+    Math.pow(options.velocityDissipation, step), Math.pow(options.weight1Dissipation, step), Math.pow(options.weight2Dissipation, step), 0,
+    options.pushStrength * step, options.curlScale, options.curlStrength * step, step]);
   const scale = dpr * options.paintScale;
   frame.strokes.forEach((stroke, index) => {
-    data.set([stroke.x * scale, height - stroke.y * scale, options.radius * scale, 1,
-      stroke.tx * scale, height - stroke.ty * scale, options.radius * scale, 1,
-      stroke.dx * dpr * 0.0032 * options.force, -stroke.dy * dpr * 0.0032 * options.force, 0, 0], 12 + index * 12);
+    // The original brush radius is already in simulation pixels, not CSS pixels.
+    const automatic = options.radius === 'auto' && stroke.speed !== undefined;
+    const radius = automatic ? Math.min(100, stroke.speed! * dpr) : (options.radius === 'auto' ? 24 : options.radius) * scale;
+    const active = radius > 0 && (!automatic || Math.hypot(stroke.dx, stroke.dy) * dpr > 0.18);
+    data.set([stroke.x * scale, height - stroke.y * scale, radius, active ? 1 : 0,
+      stroke.tx * scale, height - stroke.ty * scale, radius, active ? 1 : 0,
+      stroke.dx * dpr * 0.0032 * options.force * frame.dt, -stroke.dy * dpr * 0.0032 * options.force * frame.dt, 0, 0], 12 + index * 12);
   });
   return data;
 }

@@ -21,8 +21,8 @@ export interface FluidPrismOptions {
   paintScale?: number;
   /** Low feedback buffer scale. Defaults to 0.125. */
   lowScale?: number;
-  /** Pointer/splat radius in CSS pixels. Defaults to 24. */
-  radius?: number;
+  /** 'auto' preserves the original speed-dependent pointer width; numbers use CSS pixels. API splats use 24px in auto mode. */
+  radius?: number | 'auto';
   /** Pointer and API impulse multiplier. Defaults to 1. */
   force?: number;
   /** Sleep after ripples settle. Dynamic canvas/video/renderers keep updating. */
@@ -98,7 +98,7 @@ export const DEFAULTS = {
   dpr: 1.5,
   paintScale: 0.25,
   lowScale: 0.125,
-  radius: 24,
+  radius: 'auto',
   force: 1,
   autoSleep: true,
   respectReducedMotion: true,
@@ -140,7 +140,10 @@ export function resolveOptions(options: FluidPrismOptions = {}): ResolvedFluidPr
   for (const key of ['dpr', 'paintScale', 'lowScale'] as const) {
     if (!Number.isFinite(resolved[key]) || resolved[key] <= 0) throw new RangeError(key + ' must be a positive finite number.');
   }
-  for (const key of ['radius', 'force', 'blend'] as const) {
+  if (resolved.radius !== 'auto' && (!Number.isFinite(resolved.radius) || resolved.radius < 0)) {
+    throw new RangeError('radius must be auto or a non-negative finite number.');
+  }
+  for (const key of ['force', 'blend'] as const) {
     if (!Number.isFinite(resolved[key]) || resolved[key] < 0) throw new RangeError(key + ' must be a non-negative finite number.');
   }
   for (const key of ['velocityDissipation', 'weight1Dissipation', 'weight2Dissipation'] as const) {
