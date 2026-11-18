@@ -21,6 +21,22 @@ export interface FluidPrismOptions {
   paintScale?: number;
   /** Low feedback buffer scale. Defaults to 0.125. */
   lowScale?: number;
+  /** Pointer/splat radius in CSS pixels. Defaults to 24. */
+  radius?: number;
+  /** Pointer and API impulse multiplier. Defaults to 1. */
+  force?: number;
+  /** Sleep after ripples settle. Dynamic canvas/video/renderers keep updating. */
+  autoSleep?: boolean;
+  /** Respect the system reduced-motion preference. Defaults to true. */
+  respectReducedMotion?: boolean;
+  /** Brand tint as sRGB components in [0, 1]. */
+  color?: [number, number, number];
+  /** Use the original iridescent colors instead of the fixed tint. Defaults to true. */
+  rainbow?: boolean;
+  /** Tint/overlay opacity multiplier in [0, 1]. Defaults to 0.15. */
+  blend?: number;
+  /** Render a transparent fluid overlay; HTML stays in its original DOM. */
+  overlay?: boolean;
   /** Distortion amount. Defaults to 3. */
   amount?: number;
   /** RGB phase shift. Defaults to 0.5. */
@@ -58,17 +74,6 @@ export interface FluidPrismOptions {
 type OptionalOptions = 'container' | 'canvas' | 'source' | 'htmlSource' | 'contentRenderer';
 export type ResolvedFluidPrismOptions = Required<Omit<FluidPrismOptions, OptionalOptions>> & Pick<FluidPrismOptions, OptionalOptions>;
 
-export interface PointerState {
-  x: number;
-  y: number;
-  px: number;
-  py: number;
-  tx: number;
-  ty: number;
-  speed: number;
-  hasInput: boolean;
-}
-
 export interface FluidPrismBackendController {
   readonly htmlSourceStatus: import('./html-source').HTMLSourceStatus;
   /** Resolves when the backend has initialized, or the HTML scene has fallen back. */
@@ -79,6 +84,8 @@ export interface FluidPrismBackendController {
   readonly device: GPUDevice | null;
   start(): void;
   stop(): void;
+  /** Inject at normalized top-left coordinates [0,1]; dx/dy are CSS-pixel impulses. */
+  splat(x: number, y: number, dx: number, dy: number): void;
   destroy(): void;
   /** Merge options; undefined restores defaults or clears an optional input. */
   update(options: Partial<FluidPrismOptions>): void;
@@ -91,6 +98,14 @@ export const DEFAULTS = {
   dpr: 1.5,
   paintScale: 0.25,
   lowScale: 0.125,
+  radius: 24,
+  force: 1,
+  autoSleep: true,
+  respectReducedMotion: true,
+  color: [0.145, 0.239, 0.867] as [number, number, number],
+  rainbow: true,
+  blend: 0.15,
+  overlay: false,
   amount: 3,
   rgbShift: 0.5,
   multiplier: 5,
@@ -121,7 +136,20 @@ export function resolveOptions(options: FluidPrismOptions = {}): ResolvedFluidPr
   }
   // Framework props can disappear between renders. Explicit undefined resets them.
   const definedOptions = Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined));
-  return { ...DEFAULTS, ...definedOptions };
+  const resolved = { ...DEFAULTS, ...definedOptions };
+  for (const key of ['dpr', 'paintScale', 'lowScale'] as const) {
+    if (!Number.isFinite(resolved[key]) || resolved[key] <= 0) throw new RangeError(key + ' must be a positive finite number.');
+  }
+  for (const key of ['radius', 'force', 'blend'] as const) {
+    if (!Number.isFinite(resolved[key]) || resolved[key] < 0) throw new RangeError(key + ' must be a non-negative finite number.');
+  }
+  for (const key of ['velocityDissipation', 'weight1Dissipation', 'weight2Dissipation'] as const) {
+    if (!Number.isFinite(resolved[key]) || resolved[key] < 0 || resolved[key] > 1) throw new RangeError(key + ' must be in [0, 1].');
+  }
+  if (resolved.blend > 1 || resolved.color.length !== 3 || resolved.color.some(value => !Number.isFinite(value) || value < 0 || value > 1)) {
+    throw new RangeError('blend and color components must be in [0, 1].');
+  }
+  return { ...resolved, color: [...resolved.color] };
 }
 
 const fullscreenProperties = ['position', 'top', 'right', 'bottom', 'left', 'width', 'height', 'z-index', 'pointer-events'] as const;
@@ -184,17 +212,4 @@ export function renderSceneToCanvas(
 
   sceneCtx.fillStyle = options.backgroundColor;
   sceneCtx.fillRect(0, 0, size.width, size.height);
-}
-
-export function createInitialPointer(width: number, height: number): PointerState {
-  return {
-    x: width * 0.5,
-    y: height * 0.5,
-    px: width * 0.5,
-    py: height * 0.5,
-    tx: width * 0.5,
-    ty: height * 0.5,
-    speed: 0,
-    hasInput: false,
-  };
 }

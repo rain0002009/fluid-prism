@@ -1,12 +1,11 @@
 import { HTMLScene, type HTMLWebGLContext } from './html-source';
+import { FluidRuntime, canvasPixelRatio, packStrokes, type FluidFrame } from './runtime';
 import {
   applyCanvasStyle,
-  createInitialPointer,
   renderSceneToCanvas,
   resolveOptions,
   type FluidPrismBackendController,
   type FluidPrismOptions,
-  type PointerState,
   type ResolvedFluidPrismOptions,
 } from './shared';
 
@@ -44,13 +43,14 @@ varying vec2 v_uv;
 uniform sampler2D u_low;
 uniform sampler2D u_prev;
 uniform vec2 u_size;
-uniform vec4 u_from;
-uniform vec4 u_to;
-uniform vec2 u_vel;
+uniform vec4 u_from[8];
+uniform vec4 u_to[8];
+uniform vec2 u_vel[8];
 uniform vec3 u_diss;
 uniform float u_push;
 uniform float u_curlScale;
 uniform float u_curlStrength;
+uniform float u_dt;
 vec2 sdSegment(vec2 p, vec2 a, vec2 b){
   vec2 pa = p - a, ba = b - a;
   float h = clamp(dot(pa, ba) / max(dot(ba, ba), .0001), 0., 1.);
@@ -80,9 +80,6 @@ vec3 noised(vec2 p){
 }
 void main(){
   vec2 p = gl_FragCoord.xy;
-  vec2 seg = sdSegment(p, u_from.xy, u_to.xy);
-  vec2 rw = mix(u_from.zw, u_to.zw, seg.y);
-  float draw = 1.0 - smoothstep(-0.01, rw.x, seg.x);
   vec4 lowData = texture2D(u_low, v_uv);
   vec2 velInv = (.5 - lowData.xy) * u_push;
   vec3 n3 = noised(p * u_curlScale * (1.0 - lowData.xy));
@@ -91,9 +88,13 @@ void main(){
   vec4 data = texture2D(u_prev, v_uv + velInv / u_size);
   data.xy -= .5;
   vec4 delta = vec4(data.xy * (u_diss.x - 1.0), data.z * (u_diss.y - 1.0), data.w * (u_diss.z - 1.0));
-  vec2 newVel = u_vel * draw;
-  delta += vec4(newVel, draw * rw.y, draw * rw.y * .42);
-  delta.zw = sign(delta.zw) * max(vec2(.004), abs(delta.zw));
+  for (int i = 0; i < 8; i++) {
+    vec2 seg = sdSegment(p, u_from[i].xy, u_to[i].xy);
+    vec2 rw = mix(u_from[i].zw, u_to[i].zw, seg.y);
+    float draw = (1.0 - smoothstep(-0.01, rw.x, seg.x)) * rw.y;
+    delta += vec4(u_vel[i] * draw, draw, draw * .42);
+  }
+  delta.zw = sign(delta.zw) * max(vec2(.004 * u_dt), abs(delta.zw));
   data += delta;
   data.xy += .5;
   gl_FragColor = clamp(data, vec4(0.), vec4(1.));
@@ -113,12 +114,24 @@ uniform float u_multiplier;
 uniform float u_colorMultiplier;
 uniform float u_shade;
 uniform float u_pastelFilm;
+uniform vec3 u_color;
+uniform float u_rainbow;
+uniform float u_blend;
+uniform float u_overlay;
+vec3 toLinear(vec3 c){ return mix(c / 12.92, pow((c + .055) / 1.055, vec3(2.4)), step(vec3(.04045), c)); }
+vec3 toSrgb(vec3 c){ return mix(c * 12.92, 1.055 * pow(max(c, vec3(0.)), vec3(1. / 2.4)) - .055, step(vec3(.0031308), c)); }
 float hash(vec2 p){ return fract(sin(dot(p, vec2(41.7, 289.3))) * 45758.5453); }
 vec4 sampleScene(vec2 uv){ return texture2D(u_scene, clamp(uv, vec2(.001), vec2(.999))); }
 void main(){
   vec4 data = texture2D(u_paint, v_uv);
   float weight = (data.z + data.w) * .5;
   vec2 vel = (.5 - data.xy - .001) * 2. * weight;
+  vec3 tint = u_rainbow > .5 ? sin(vec3(vel.x + vel.y) * 40. + vec3(0., 2., 4.)) * .5 + .5 : u_color;
+  if (u_overlay > .5) {
+    float alpha = clamp(weight * u_blend, 0., .85);
+    gl_FragColor = vec4(tint * alpha, alpha);
+    return;
+  }
   vec2 velocity = vel * u_amount / 4.0 * u_paintTexel * u_multiplier;
   vec2 bnoise = vec2(hash(gl_FragCoord.xy + vec2(17., 29.) + u_time), hash(gl_FragCoord.yx + vec2(29., 17.) - u_time));
   vec2 uv = v_uv + bnoise * velocity;
@@ -127,8 +140,9 @@ void main(){
   color /= 9.;
   float oilMask = smoothstep(0.4, -0.9, weight) * max(abs(vel.x), abs(vel.y));
   vec3 oil = sin(vec3(vel.x + vel.y) * 40.0 + vec3(0.0, 2.0, 4.0) * u_rgbShift) * oilMask * u_shade * u_colorMultiplier;
-  color.rgb += oil;
-  float film = smoothstep(.015, .42, weight) * (1.0 - smoothstep(.78, 1.0, weight)) * u_pastelFilm;
+  color.rgb += oil * u_rainbow;
+  if (u_rainbow < .5) color.rgb = toSrgb(mix(toLinear(clamp(color.rgb, 0., 1.)), toLinear(u_color), clamp(weight * u_blend, 0., 1.)));
+  float film = smoothstep(.015, .42, weight) * (1.0 - smoothstep(.78, 1.0, weight)) * u_pastelFilm * u_rainbow;
   vec3 pastel = vec3(sin((vel.x - vel.y) * 26.0 + 0.2), sin((vel.x + vel.y) * 31.0 + 2.3), sin((vel.y - vel.x) * 29.0 + 4.1)) * .5 + .5;
   pastel = mix(vec3(.98), pastel, .20);
   color.rgb = mix(color.rgb, color.rgb * pastel + vec3(.018, .025, .030) * film, film * .28);
@@ -147,8 +161,7 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   private options: ResolvedFluidPrismOptions;
   private htmlScene: HTMLScene | null = null;
   private ownsCanvas: boolean;
-  private running = false;
-  private raf = 0;
+  private runtime: FluidRuntime | null = null;
   private sceneCanvas = document.createElement('canvas');
   private sceneCtx = this.sceneCanvas.getContext('2d');
   private sceneTexture: WebGLTexture | null = null;
@@ -162,8 +175,6 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   private lw = 1;
   private lh = 1;
   private dpr = 1;
-  private last = performance.now();
-  private pointer: PointerState = createInitialPointer(1, 1);
   private paintProg!: WebGLProgram;
   private lowProg!: WebGLProgram;
   private finalProg!: WebGLProgram;
@@ -200,32 +211,30 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     this.bindEvents();
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.canvas);
-    if (this.options.autoStart) this.start();
+    this.runtime = new FluidRuntime(this.canvas, () => this.options, () => this.htmlScene?.interacting ?? false, this.render, this.canRender);
   }
 
   start() {
-    if (this.running || this.destroyed || this.contextUnavailable || !this.gl || this.gl.isContextLost()) return;
-    this.running = true;
-    this.last = performance.now();
-    this.requestFrame();
+    if (this.destroyed || this.contextUnavailable || !this.gl || this.gl.isContextLost()) return;
+    this.runtime?.start();
   }
 
   get htmlSourceStatus() { return this.htmlScene?.status ?? 'disabled'; }
 
   stop() {
-    this.running = false;
-    cancelAnimationFrame(this.raf);
+    this.runtime?.stop();
   }
+
+  splat(x: number, y: number, dx: number, dy: number) { this.runtime?.splat(x, y, dx, dy); }
 
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
-    this.stop();
+    this.runtime?.destroy();
     this.htmlScene?.destroy();
     this.resizeObserver?.disconnect();
     window.removeEventListener('resize', this.resize);
-    window.removeEventListener('pointermove', this.move);
-    window.removeEventListener('pointerdown', this.move);
+    window.visualViewport?.removeEventListener('resize', this.resize);
     this.canvas.removeEventListener('webglcontextlost', this.contextLost);
     this.deletePaint();
     if (this.gl) {
@@ -239,12 +248,14 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   update(options: Partial<FluidPrismOptions>) {
     if (this.destroyed) return;
     const previousSource = this.options.htmlSource;
+    const previousOverlay = this.options.overlay;
     this.options = resolveOptions({ ...this.options, ...options, backend: 'webgl' });
-    if (this.options.htmlSource !== previousSource) this.configureHTMLSource();
+    if (this.options.htmlSource !== previousSource || this.options.overlay !== previousOverlay) this.configureHTMLSource();
     applyCanvasStyle(this.canvas, this.options);
     this.htmlScene?.refreshStyle();
     this.resize();
     if (!this.htmlScene && this.gl) this.uploadScene(performance.now());
+    this.runtime?.update();
   }
 
   resize = () => {
@@ -252,7 +263,7 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     const rect = this.canvas.getBoundingClientRect();
     const viewportW = this.options.fullscreen ? window.innerWidth : rect.width || this.canvas.clientWidth || 1;
     const viewportH = this.options.fullscreen ? window.innerHeight : rect.height || this.canvas.clientHeight || 1;
-    this.dpr = Math.min(this.options.dpr, window.devicePixelRatio || 1);
+    this.dpr = canvasPixelRatio(this.options, viewportW, viewportH, Math.min(this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE), this.gl.getParameter(this.gl.MAX_RENDERBUFFER_SIZE)));
     this.w = Math.max(2, Math.floor(viewportW * this.dpr));
     this.h = Math.max(2, Math.floor(viewportH * this.dpr));
     if (this.canvas.width === this.w && this.canvas.height === this.h &&
@@ -274,29 +285,22 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     this.clearPaint(this.paintA);
     this.clearPaint(this.paintB);
     this.clearPaint(this.lowPaint);
-    this.pointer = createInitialPointer(viewportW, viewportH);
+    this.runtime?.resize();
     this.htmlScene?.resize();
     if (!this.htmlScene) this.uploadScene(performance.now());
   };
 
   private configureHTMLSource() {
-    cancelAnimationFrame(this.raf);
     this.htmlScene?.destroy();
     this.htmlScene = null;
     applyCanvasStyle(this.canvas, this.options);
     if (this.options.htmlSource) {
-      this.htmlScene = new HTMLScene(this.canvas, this.options.htmlSource, () => this.render(performance.now()));
+      this.htmlScene = new HTMLScene(this.canvas, this.options.htmlSource, () => this.runtime?.invalidate(), this.options.overlay);
       this.htmlScene.activate(!this.contextUnavailable && Boolean(this.gl && !this.gl.isContextLost()) &&
         typeof (this.gl as Partial<HTMLWebGLContext> | null)?.texElementSubImage2D === 'function');
     }
     this.sceneWidth = this.sceneHeight = 0;
-    if (this.running) this.requestFrame();
-  }
-
-  private requestFrame() {
-    if (!this.running) return;
-    if (this.htmlScene) this.htmlScene.requestPaint();
-    else this.raf = requestAnimationFrame(this.render);
+    this.runtime?.invalidate();
   }
 
   private mount() {
@@ -306,8 +310,7 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
 
   private bindEvents() {
     window.addEventListener('resize', this.resize);
-    window.addEventListener('pointermove', this.move, { passive: true });
-    window.addEventListener('pointerdown', this.move, { passive: true });
+    window.visualViewport?.addEventListener('resize', this.resize, { passive: true });
     this.canvas.addEventListener('webglcontextlost', this.contextLost);
   }
 
@@ -323,18 +326,11 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     return this.gl;
   }
 
-  private move = (event: PointerEvent) => {
-    const rect = this.canvas.getBoundingClientRect();
-    this.pointer.tx = event.clientX - rect.left;
-    this.pointer.ty = event.clientY - rect.top;
-    this.pointer.hasInput = true;
-  };
-
-  private render = (now: number) => {
-    if (this.htmlScene ? this.htmlScene.status !== 'native' || !this.htmlScene.snapshotReady : !this.running) return;
+  private render = (frame: FluidFrame) => {
+    if (this.destroyed || this.contextUnavailable) return;
+    if (this.htmlScene && !this.options.overlay && (this.htmlScene.status !== 'native' || !this.htmlScene.snapshotReady)) { this.htmlScene.requestPaint(); return; }
     const gl = this.context;
-    const dt = Math.min(32, now - this.last) / 16.666;
-    this.last = now;
+    const { now } = frame;
     try { this.uploadScene(now); }
     catch (error) {
       if (!this.htmlScene) throw error;
@@ -342,54 +338,46 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
       return;
     }
 
-    const p = this.pointer;
-    const interacting = this.htmlScene?.interacting ?? false;
-    // Stop emitting strokes during interaction; existing ripples keep decaying.
-    if (interacting) { p.x = p.px = p.tx; p.y = p.py = p.ty; p.speed = 0; p.hasInput = false; }
-    p.x += (p.tx - p.x) * 0.55;
-    p.y += (p.ty - p.y) * 0.55;
-    const dx = (p.x - p.px) * this.dpr;
-    const dy = (p.y - p.py) * this.dpr;
-    const dist = Math.hypot(dx, dy);
-    p.speed = p.speed * 0.72 + dist * 0.28;
-    const radius = p.hasInput && dist > 0.18 ? Math.min(100, p.speed) : 0;
-    const sourceH = this.options.fullscreen ? window.innerHeight : this.canvas.getBoundingClientRect().height || this.canvas.clientHeight || 1;
-    const fx = p.px * this.dpr * this.options.paintScale;
-    const fy = (sourceH - p.py) * this.dpr * this.options.paintScale;
-    const tx = p.x * this.dpr * this.options.paintScale;
-    const ty = (sourceH - p.y) * this.dpr * this.options.paintScale;
-    const velScale = 0.0032 * dt;
+    if (frame.simulate) {
+      const packed = packStrokes(frame, this.options, this.dpr, this.pw, this.ph);
+      const from = new Float32Array(32), to = new Float32Array(32), velocity = new Float32Array(16);
+      for (let i = 0; i < 8; i++) {
+        from.set(packed.subarray(12 + i * 12, 16 + i * 12), i * 4);
+        to.set(packed.subarray(16 + i * 12, 20 + i * 12), i * 4);
+        velocity.set(packed.subarray(20 + i * 12, 22 + i * 12), i * 2);
+      }
+      gl.useProgram(this.lowProg);
+      this.bindQuad(this.lowProg);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.lowPaint.fb);
+      gl.viewport(0, 0, this.lw, this.lh);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.paintA.texture);
+      this.uniform1i(this.lowProg, 'u_tex', 0);
+      this.uniform2f(this.lowProg, 'u_texel', 1 / this.pw, 1 / this.ph);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-    gl.useProgram(this.lowProg);
-    this.bindQuad(this.lowProg);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.lowPaint.fb);
-    gl.viewport(0, 0, this.lw, this.lh);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.paintA.texture);
-    this.uniform1i(this.lowProg, 'u_tex', 0);
-    this.uniform2f(this.lowProg, 'u_texel', 1 / this.pw, 1 / this.ph);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-
-    gl.useProgram(this.paintProg);
-    this.bindQuad(this.paintProg);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.paintB.fb);
-    gl.viewport(0, 0, this.pw, this.ph);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.lowPaint.texture);
-    this.uniform1i(this.paintProg, 'u_low', 0);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, this.paintA.texture);
-    this.uniform1i(this.paintProg, 'u_prev', 1);
-    this.uniform2f(this.paintProg, 'u_size', this.pw, this.ph);
-    this.uniform4f(this.paintProg, 'u_from', fx, fy, radius, radius > 0 ? 1 : 0);
-    this.uniform4f(this.paintProg, 'u_to', tx, ty, radius, radius > 0 ? 1 : 0);
-    this.uniform2f(this.paintProg, 'u_vel', radius > 0 ? dx * velScale : 0, radius > 0 ? -dy * velScale : 0);
-    this.uniform3f(this.paintProg, 'u_diss', this.options.velocityDissipation, this.options.weight1Dissipation, this.options.weight2Dissipation);
-    this.uniform1f(this.paintProg, 'u_push', this.options.pushStrength);
-    this.uniform1f(this.paintProg, 'u_curlScale', this.options.curlScale);
-    this.uniform1f(this.paintProg, 'u_curlStrength', this.options.curlStrength);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-    [this.paintA, this.paintB] = [this.paintB, this.paintA];
+      gl.useProgram(this.paintProg);
+      this.bindQuad(this.paintProg);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.paintB.fb);
+      gl.viewport(0, 0, this.pw, this.ph);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.lowPaint.texture);
+      this.uniform1i(this.paintProg, 'u_low', 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, this.paintA.texture);
+      this.uniform1i(this.paintProg, 'u_prev', 1);
+      this.uniform2f(this.paintProg, 'u_size', this.pw, this.ph);
+      gl.uniform4fv(gl.getUniformLocation(this.paintProg, 'u_from[0]'), from);
+      gl.uniform4fv(gl.getUniformLocation(this.paintProg, 'u_to[0]'), to);
+      gl.uniform2fv(gl.getUniformLocation(this.paintProg, 'u_vel[0]'), velocity);
+      this.uniform3f(this.paintProg, 'u_diss', packed[4], packed[5], packed[6]);
+      this.uniform1f(this.paintProg, 'u_push', packed[8]);
+      this.uniform1f(this.paintProg, 'u_curlScale', this.options.curlScale);
+      this.uniform1f(this.paintProg, 'u_curlStrength', packed[10]);
+      this.uniform1f(this.paintProg, 'u_dt', frame.dt);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      [this.paintA, this.paintB] = [this.paintB, this.paintA];
+    }
 
     gl.useProgram(this.finalProg);
     this.bindQuad(this.finalProg);
@@ -409,14 +397,30 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
     this.uniform1f(this.finalProg, 'u_colorMultiplier', this.options.colorMultiplier);
     this.uniform1f(this.finalProg, 'u_shade', this.options.shade);
     this.uniform1f(this.finalProg, 'u_pastelFilm', this.options.pastelFilm ? 1 : 0);
+    this.uniform3f(this.finalProg, 'u_color', ...this.options.color);
+    this.uniform1f(this.finalProg, 'u_rainbow', this.options.rainbow ? 1 : 0);
+    this.uniform1f(this.finalProg, 'u_blend', this.options.blend);
+    this.uniform1f(this.finalProg, 'u_overlay', this.options.overlay ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-    p.px = p.x;
-    p.py = p.y;
-    this.requestFrame();
+    if (frame.simulate) this.htmlScene?.requestPaint();
+  };
+
+  private canRender = () => {
+    if (this.destroyed || this.contextUnavailable) return false;
+    if (this.htmlScene && !this.options.overlay) {
+      if (this.htmlScene.status !== 'native') return false;
+      if (!this.htmlScene.snapshotReady) { this.htmlScene.requestPaint(); return false; }
+    }
+    return true;
   };
 
   private uploadScene(now: number) {
+    if (this.options.overlay) {
+      // Active WebGL samplers need a complete texture even in the overlay branch.
+      if (!this.sceneTexture) this.sceneTexture = this.tex(1, 1, new Uint8Array(4));
+      return;
+    }
     if (this.htmlScene && (!this.htmlScene.snapshotReady || !this.htmlScene.needsUpload)) return;
     const gl = this.context;
     if (!this.sceneTexture) this.sceneTexture = gl.createTexture();
@@ -513,5 +517,4 @@ export class WebGLFluidPrismBackend implements FluidPrismBackendController {
   private uniform1f(program: WebGLProgram, name: string, x: number) { this.context.uniform1f(this.context.getUniformLocation(program, name), x); }
   private uniform2f(program: WebGLProgram, name: string, x: number, y: number) { this.context.uniform2f(this.context.getUniformLocation(program, name), x, y); }
   private uniform3f(program: WebGLProgram, name: string, x: number, y: number, z: number) { this.context.uniform3f(this.context.getUniformLocation(program, name), x, y, z); }
-  private uniform4f(program: WebGLProgram, name: string, x: number, y: number, z: number, w: number) { this.context.uniform4f(this.context.getUniformLocation(program, name), x, y, z, w); }
 }

@@ -1,4 +1,4 @@
-import { webgl, webgpu, type FluidPrism, type FluidPrismBackendKind } from '../src';
+import { createFluidPrism, type FluidPrism, type FluidPrismBackendKind } from '../src';
 import { createSettingsPanel } from './settings';
 
 const search = new URLSearchParams(window.location.search);
@@ -32,6 +32,7 @@ controls.innerHTML = `
     </select>
   </label>
   <button id="change-title" type="button">Update HTML title</button>
+  <button id="inject-splat" type="button">注入中心波纹</button>
   <div id="backend-status" style="margin-top:10px;padding:10px 14px;border-radius:16px;background:rgba(17,17,17,.72);color:#fff;font:500 12px/1.45 Inter, Arial, sans-serif;max-width:320px;"></div>
 `;
 
@@ -61,11 +62,26 @@ select.value = initialBackend;
 
 let effect: FluidPrism | null = null;
 let mountVersion = 0;
-const settingsPanel = createSettingsPanel(options => effect?.update(options));
+let pending: Promise<void> = Promise.resolve();
+const settingsPanel = createSettingsPanel(options => { effect?.update(options); reportStatus(); });
+controls.querySelector('#inject-splat')!.addEventListener('click', () => effect?.splat(.5, .5, 60, -30));
+controls.addEventListener('pointermove', event => event.stopPropagation());
+controls.addEventListener('pointerdown', event => event.stopPropagation());
 document.body.appendChild(settingsPanel.element);
 
 function updateStatus(message: string) {
   status.textContent = message;
+}
+
+function reportStatus() {
+  if (!effect) return;
+  updateStatus(settingsPanel.getOptions().overlay
+    ? effect.backend.toUpperCase() + ' · 透明叠加，原 HTML 保留交互；关闭叠加可使用原生折射。'
+    : sceneSelect.value === 'html'
+      ? effect.htmlSourceStatus === 'native'
+        ? effect.backend.toUpperCase() + ' · Native HTML in Canvas. Controls pause new ripples; existing trails fade naturally.'
+        : '普通 HTML 降级 · 当前浏览器或后端无法绘制 HTML，表单与文字选择仍可使用。'
+      : effect.backend.toUpperCase() + ' · 2D canvas scene.');
 }
 
 function renderContent(ctx: CanvasRenderingContext2D, { width: w, height: h }: { width: number; height: number; dpr: number; time: number }) {
@@ -102,30 +118,30 @@ async function mountEffect(backend: FluidPrismBackendKind) {
   const html = sceneSelect.value === 'html';
   scene.hidden = !html;
   updateStatus('Preparing the selected renderer…');
-  try {
+  pending = pending.then(async () => {
+    if (version !== mountVersion) return;
     const options = { zIndex: 1, ...settingsPanel.getOptions(), ...(html ? { htmlSource: scene } : { contentRenderer: renderContent }) };
-    const instance = backend === 'webgpu' ? webgpu.createFluidPrism(options) : webgl.createFluidPrism(options);
+    const instance = await createFluidPrism({ backend, ...options });
+    if (version !== mountVersion) { instance.destroy(); return; }
     effect = instance;
+    instance.update(settingsPanel.getOptions());
     await instance.ready;
     if (version !== mountVersion) return;
     const url = new URL(window.location.href);
     url.searchParams.set('backend', backend);
     url.searchParams.set('scene', html ? 'html' : 'canvas');
     window.history.replaceState({}, '', url);
-    const reportStatus = () => {
+    const reportCurrentStatus = () => {
       if (version !== mountVersion) return;
-      updateStatus(html
-        ? instance.htmlSourceStatus === 'native'
-          ? `${backend.toUpperCase()} · Native HTML in Canvas. Controls pause new ripples; existing trails fade naturally.`
-          : '普通 HTML 降级 · 当前浏览器或后端无法绘制 HTML，表单与文字选择仍可使用。'
-        : `${backend.toUpperCase()} · 2D canvas scene.`);
+      reportStatus();
     };
-    reportStatus();
-    if (html) instance.canvas.addEventListener('paint', reportStatus);
-  } catch (error) {
+    reportCurrentStatus();
+    if (html) instance.canvas.addEventListener('paint', reportCurrentStatus);
+  }).catch(error => {
+    if (version !== mountVersion) return;
     console.error(error);
     updateStatus(error instanceof Error ? error.message : 'Failed to initialize the selected renderer.');
-  }
+  });
 }
 
 
@@ -134,5 +150,5 @@ select.addEventListener('change', () => {
 });
 
 sceneSelect.addEventListener('change', () => { void mountEffect(select.value === 'webgpu' ? 'webgpu' : 'webgl'); });
-window.addEventListener('pagehide', () => effect?.destroy());
+window.addEventListener('pagehide', () => { mountVersion++; effect?.destroy(); });
 void mountEffect(initialBackend);

@@ -35,7 +35,7 @@ export class HTMLScene {
   snapshotReady = false;
   needsUpload = true;
 
-  constructor(readonly canvas: HTMLCanvasElement, readonly source: HTMLElement, private onPaint: () => void) {
+  constructor(readonly canvas: HTMLCanvasElement, readonly source: HTMLElement, private onPaint: () => void, private overlay = false) {
     if (source === canvas || source.contains(canvas)) {
       throw new Error('htmlSource must not contain the effect canvas.');
     }
@@ -48,8 +48,9 @@ export class HTMLScene {
     this.originalStyles = managedStyles.map(name => [name, source.style.getPropertyValue(name), source.style.getPropertyPriority(name)]);
     this.canvasStyles = { visibility: canvas.style.visibility, pointerEvents: canvas.style.pointerEvents, cursor: canvas.style.cursor };
     if (source.parentNode) source.before(this.marker);
-    canvas.style.visibility = 'hidden';
+    canvas.style.visibility = overlay ? this.canvasStyles.visibility : 'hidden';
     if (!source.isConnected || canvas.contains(source)) canvas.before(source);
+    if (overlay) { this.refreshStyle(); this.bindInteraction(); }
   }
 
   get status(): HTMLSourceStatus { return this.native ? 'native' : 'fallback'; }
@@ -62,6 +63,7 @@ export class HTMLScene {
   }
 
   activate(backendSupported: boolean) {
+    if (this.overlay) { this.refreshStyle(); return; }
     const canvas = this.canvas as Partial<DrawableCanvas>;
     if (!backendSupported || typeof canvas.content !== 'string' ||
         typeof canvas.requestPaint !== 'function' || typeof canvas.updateElementGeometry !== 'function' ||
@@ -76,6 +78,12 @@ export class HTMLScene {
 
     const signal = this.listeners.signal;
     this.canvas.addEventListener('paint', this.paint, { signal });
+    this.bindInteraction();
+    this.requestPaint();
+  }
+
+  private bindInteraction() {
+    const signal = this.listeners.signal;
     this.source.addEventListener('pointerover', this.hover, { signal });
     this.source.addEventListener('pointerout', this.leave, { signal });
     this.source.addEventListener('pointerdown', () => { this.pressed = true; this.requestPaint(); }, { signal });
@@ -89,7 +97,8 @@ export class HTMLScene {
   }
 
   refreshStyle() {
-    this.canvas.style.visibility = this.native ? this.canvasStyles.visibility : 'hidden';
+    this.canvas.style.visibility = this.native || this.overlay ? this.canvasStyles.visibility : 'hidden';
+    if (this.overlay) this.canvas.style.pointerEvents = 'none';
     if (this.native) {
       this.canvas.style.pointerEvents = 'auto';
       this.canvas.style.cursor = '';
@@ -109,12 +118,13 @@ export class HTMLScene {
 
   requestPaint = () => {
     if (this.native && !this.destroyed) (this.canvas as DrawableCanvas).requestPaint();
+    else if (this.overlay && !this.destroyed) this.onPaint();
   };
 
   fallback() {
     if (this.native) this.restoreDOM();
     this.native = false;
-    this.canvas.style.visibility = 'hidden';
+    this.refreshStyle();
     if (!this.source.isConnected || this.canvas.contains(this.source)) this.canvas.before(this.source);
   }
 

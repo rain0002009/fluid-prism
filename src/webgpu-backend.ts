@@ -1,12 +1,11 @@
 import { HTMLScene, type HTMLGPUQueue } from './html-source';
+import { FluidRuntime, canvasPixelRatio, packStrokes, type FluidFrame } from './runtime';
 import {
   applyCanvasStyle,
-  createInitialPointer,
   renderSceneToCanvas,
   resolveOptions,
   type FluidPrismBackendController,
   type FluidPrismOptions,
-  type PointerState,
   type ResolvedFluidPrismOptions,
 } from './shared';
 
@@ -66,13 +65,16 @@ fn main(@location(0) uv : vec2f) -> @location(0) vec4f {
 `;
 
 const paintFragmentWGSL = /* wgsl */ `
-struct PaintUniforms {
-  size : vec4f,
+struct Stroke {
   strokeFrom : vec4f,
   strokeTo : vec4f,
   vel : vec4f,
+}
+struct PaintUniforms {
+  size : vec4f,
   diss : vec4f,
   params : vec4f,
+  strokes : array<Stroke, 8>,
 }
 
 @group(0) @binding(0) var linearSampler : sampler;
@@ -115,9 +117,6 @@ fn noised(p : vec2f) -> vec3f {
 fn main(@builtin(position) position : vec4f, @location(0) uv : vec2f) -> @location(0) vec4f {
   let sampleUv = vec2f(uv.x, 1.0 - uv.y);
   let p = vec2f(position.x, uniforms.size.y - position.y);
-  let seg = sdSegment(p, uniforms.strokeFrom.xy, uniforms.strokeTo.xy);
-  let rw = mix(uniforms.strokeFrom.zw, uniforms.strokeTo.zw, vec2f(seg.y));
-  let draw = 1.0 - smoothstep(-0.01, rw.x, seg.x);
   let lowData = textureSample(lowTexture, linearSampler, sampleUv);
   var velInv = (vec2f(0.5, 0.5) - lowData.xy) * uniforms.params.x;
   let n3 = noised(p * uniforms.params.y * (vec2f(1.0, 1.0) - lowData.xy));
@@ -130,9 +129,14 @@ fn main(@builtin(position) position : vec4f, @location(0) uv : vec2f) -> @locati
     data.z * (uniforms.diss.y - 1.0),
     data.w * (uniforms.diss.z - 1.0),
   );
-  let newVel = uniforms.vel.xy * draw;
-  delta += vec4f(newVel, draw * rw.y, draw * rw.y * 0.42);
-  delta = vec4f(delta.xy, sign(delta.zw) * max(vec2f(0.004, 0.004), abs(delta.zw)));
+  for (var i = 0u; i < 8u; i++) {
+    let stroke = uniforms.strokes[i];
+    let seg = sdSegment(p, stroke.strokeFrom.xy, stroke.strokeTo.xy);
+    let rw = mix(stroke.strokeFrom.zw, stroke.strokeTo.zw, vec2f(seg.y));
+    let draw = (1.0 - smoothstep(-0.01, rw.x, seg.x)) * rw.y;
+    delta += vec4f(stroke.vel.xy * draw, draw, draw * 0.42);
+  }
+  delta = vec4f(delta.xy, sign(delta.zw) * max(vec2f(0.004 * uniforms.params.w), abs(delta.zw)));
   data += delta;
   data = vec4f(data.xy + vec2f(0.5, 0.5), data.zw);
   return clamp(data, vec4f(0.0), vec4f(1.0));
@@ -144,6 +148,7 @@ struct FinalUniforms {
   frameA : vec4f,
   frameB : vec4f,
   frameC : vec4f,
+  tint : vec4f,
 }
 
 @group(0) @binding(0) var linearSampler : sampler;
@@ -159,6 +164,13 @@ fn sampleScene(uv : vec2f) -> vec4f {
   return textureSample(sceneTexture, linearSampler, clamp(uv, vec2f(0.001), vec2f(0.999)));
 }
 
+fn toLinear(c : vec3f) -> vec3f {
+  return mix(c / 12.92, pow((c + vec3f(0.055)) / 1.055, vec3f(2.4)), step(vec3f(0.04045), c));
+}
+fn toSrgb(c : vec3f) -> vec3f {
+  return mix(c * 12.92, 1.055 * pow(max(c, vec3f(0.0)), vec3f(1.0 / 2.4)) - vec3f(0.055), step(vec3f(0.0031308), c));
+}
+
 @fragment
 fn main(@builtin(position) position : vec4f, @location(0) uvIn : vec2f) -> @location(0) vec4f {
   let paintUv = vec2f(uvIn.x, 1.0 - uvIn.y);
@@ -166,6 +178,11 @@ fn main(@builtin(position) position : vec4f, @location(0) uvIn : vec2f) -> @loca
   let data = textureSample(paintTexture, linearSampler, paintUv);
   let weight = (data.z + data.w) * 0.5;
   let vel = (vec2f(0.5, 0.5) - data.xy - vec2f(0.001, 0.001)) * 2.0 * weight;
+  let tint = mix(uniforms.tint.rgb, sin(vec3f(vel.x + vel.y) * 40.0 + vec3f(0.0, 2.0, 4.0)) * 0.5 + vec3f(0.5), vec3f(uniforms.frameC.y));
+  if (uniforms.frameC.w > 0.5) {
+    let alpha = clamp(weight * uniforms.frameC.z, 0.0, 0.85);
+    return vec4f(tint * alpha, alpha);
+  }
   let velocity = vel * uniforms.frameA.w / 4.0 * uniforms.frameA.xy * uniforms.frameB.y;
   let time = uniforms.frameA.z;
   let pixelPos = vec2f(position.x, position.y);
@@ -182,8 +199,11 @@ fn main(@builtin(position) position : vec4f, @location(0) uvIn : vec2f) -> @loca
   color /= 9.0;
   let oilMask = smoothstep(0.4, -0.9, weight) * max(abs(vel.x), abs(vel.y));
   let oil = sin(vec3f(vel.x + vel.y) * 40.0 + vec3f(0.0, 2.0, 4.0) * uniforms.frameB.x) * oilMask * uniforms.frameB.w * uniforms.frameB.z;
-  color = vec4f(color.rgb + oil, color.a);
-  let film = smoothstep(0.015, 0.42, weight) * (1.0 - smoothstep(0.78, 1.0, weight)) * uniforms.frameC.x;
+  color = vec4f(color.rgb + oil * uniforms.frameC.y, color.a);
+  if (uniforms.frameC.y < 0.5) {
+    color = vec4f(toSrgb(mix(toLinear(clamp(color.rgb, vec3f(0.0), vec3f(1.0))), toLinear(uniforms.tint.rgb), vec3f(clamp(weight * uniforms.frameC.z, 0.0, 1.0)))), color.a);
+  }
+  let film = smoothstep(0.015, 0.42, weight) * (1.0 - smoothstep(0.78, 1.0, weight)) * uniforms.frameC.x * uniforms.frameC.y;
   var pastel = vec3f(
     sin((vel.x - vel.y) * 26.0 + 0.2),
     sin((vel.x + vel.y) * 31.0 + 2.3),
@@ -205,9 +225,8 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   private options: ResolvedFluidPrismOptions;
   private htmlScene: HTMLScene | null = null;
   private ownsCanvas: boolean;
-  private running = false;
+  private runtime: FluidRuntime | null = null;
   private destroyed = false;
-  private raf = 0;
   private sceneCanvas = document.createElement('canvas');
   private sceneCtx = this.sceneCanvas.getContext('2d');
   private w = 1;
@@ -217,8 +236,6 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   private lw = 1;
   private lh = 1;
   private dpr = 1;
-  private last = performance.now();
-  private pointer: PointerState = createInitialPointer(1, 1);
 
   private context: GPUCanvasContext | null = null;
   private gpuDevice: GPUDevice | null = null;
@@ -254,7 +271,7 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     this.ready = navigator.gpu ? this.init() : Promise.resolve();
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.canvas);
-    if (this.options.autoStart) this.start();
+    this.runtime = new FluidRuntime(this.canvas, () => this.options, () => this.htmlScene?.interacting ?? false, this.render, this.canRender);
   }
 
   get device() {
@@ -264,26 +281,23 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   get htmlSourceStatus() { return this.htmlScene?.status ?? 'disabled'; }
 
   start() {
-    if (this.running || this.destroyed) return;
-    this.running = true;
-    this.last = performance.now();
-    this.requestFrame();
+    if (!this.destroyed && !this.initError) this.runtime?.start();
   }
 
   stop() {
-    this.running = false;
-    cancelAnimationFrame(this.raf);
+    this.runtime?.stop();
   }
+
+  splat(x: number, y: number, dx: number, dy: number) { this.runtime?.splat(x, y, dx, dy); }
 
   destroy() {
     if (this.destroyed) return;
     this.destroyed = true;
-    this.stop();
+    this.runtime?.destroy();
     this.htmlScene?.destroy();
     this.resizeObserver?.disconnect();
     window.removeEventListener('resize', this.resize);
-    window.removeEventListener('pointermove', this.move);
-    window.removeEventListener('pointerdown', this.move);
+    window.visualViewport?.removeEventListener('resize', this.resize);
     this.context?.unconfigure();
     this.sceneTexture?.destroy();
     this.paintA?.texture.destroy();
@@ -299,11 +313,13 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
   update(options: Partial<FluidPrismOptions>) {
     if (this.destroyed) return;
     const previousSource = this.options.htmlSource;
+    const previousOverlay = this.options.overlay;
     this.options = resolveOptions({ ...this.options, ...options, backend: 'webgpu' });
-    if (this.options.htmlSource !== previousSource) this.configureHTMLSource();
+    if (this.options.htmlSource !== previousSource || this.options.overlay !== previousOverlay) this.configureHTMLSource();
     applyCanvasStyle(this.canvas, this.options);
     this.htmlScene?.refreshStyle();
     this.resize();
+    this.runtime?.update();
   }
 
   resize = () => {
@@ -311,7 +327,7 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     const rect = this.canvas.getBoundingClientRect();
     const viewportW = this.options.fullscreen ? window.innerWidth : rect.width || this.canvas.clientWidth || 1;
     const viewportH = this.options.fullscreen ? window.innerHeight : rect.height || this.canvas.clientHeight || 1;
-    this.dpr = Math.min(this.options.dpr, window.devicePixelRatio || 1);
+    this.dpr = canvasPixelRatio(this.options, viewportW, viewportH, this.gpuDevice?.limits.maxTextureDimension2D ?? 8192);
     this.w = Math.max(2, Math.floor(viewportW * this.dpr));
     this.h = Math.max(2, Math.floor(viewportH * this.dpr));
     if (this.canvas.width === this.w && this.canvas.height === this.h &&
@@ -326,31 +342,24 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     this.ph = Math.max(2, Math.floor(this.h * this.options.paintScale));
     this.lw = Math.max(2, Math.floor(this.w * this.options.lowScale));
     this.lh = Math.max(2, Math.floor(this.h * this.options.lowScale));
-    this.pointer = createInitialPointer(viewportW, viewportH);
+    this.runtime?.resize();
     if (this.initialized) this.recreateResources();
     this.htmlScene?.resize();
   };
 
   private configureHTMLSource() {
-    cancelAnimationFrame(this.raf);
     this.htmlScene?.destroy();
     this.htmlScene = null;
     applyCanvasStyle(this.canvas, this.options);
     if (this.options.htmlSource) {
-      this.htmlScene = new HTMLScene(this.canvas, this.options.htmlSource, () => this.render(performance.now()));
+      this.htmlScene = new HTMLScene(this.canvas, this.options.htmlSource, () => this.runtime?.invalidate(), this.options.overlay);
       if (this.initialized) this.activateHTMLSource();
     }
-    if (this.running) this.requestFrame();
+    this.runtime?.invalidate();
   }
 
   private activateHTMLSource() {
     this.htmlScene?.activate(typeof (this.gpuDevice?.queue as Partial<HTMLGPUQueue> | undefined)?.drawElementImageToTexture === 'function');
-  }
-
-  private requestFrame() {
-    if (!this.running) return;
-    if (this.htmlScene) this.htmlScene.requestPaint();
-    else this.raf = requestAnimationFrame(this.render);
   }
 
   private mount() {
@@ -360,16 +369,8 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
 
   private bindEvents() {
     window.addEventListener('resize', this.resize);
-    window.addEventListener('pointermove', this.move, { passive: true });
-    window.addEventListener('pointerdown', this.move, { passive: true });
+    window.visualViewport?.addEventListener('resize', this.resize, { passive: true });
   }
-
-  private move = (event: PointerEvent) => {
-    const rect = this.canvas.getBoundingClientRect();
-    this.pointer.tx = event.clientX - rect.left;
-    this.pointer.ty = event.clientY - rect.top;
-    this.pointer.hasInput = true;
-  };
 
   private async init() {
     try {
@@ -397,8 +398,8 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
       });
 
       this.lowUniformBuffer = device.createBuffer({ size: 16, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST });
-      this.paintUniformBuffer = device.createBuffer({ size: 96, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST });
-      this.finalUniformBuffer = device.createBuffer({ size: 48, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST });
+      this.paintUniformBuffer = device.createBuffer({ size: 432, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST });
+      this.finalUniformBuffer = device.createBuffer({ size: 64, usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST });
       this.lowPipeline = this.createPipeline(lowFragmentWGSL, 'rgba8unorm');
       this.paintPipeline = this.createPipeline(paintFragmentWGSL, 'rgba8unorm');
       this.finalPipeline = this.createPipeline(finalFragmentWGSL, this.surfaceFormat);
@@ -414,6 +415,8 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
       this.initialized = true;
       this.recreateResources();
       this.activateHTMLSource();
+      this.resize();
+      this.runtime?.invalidate();
     } catch (error) {
       this.initError = error instanceof Error ? error : new Error(String(error));
       this.stop();
@@ -486,22 +489,32 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     this.gpuDevice.queue.submit([encoder.finish()]);
   }
 
-  private render = (now: number) => {
-    if (this.htmlScene ? this.htmlScene.status !== 'native' || !this.htmlScene.snapshotReady : !this.running) return;
+  private canRender = () => {
+    if (!this.initialized || this.initError || this.destroyed) return false;
+    if (this.htmlScene && !this.options.overlay) {
+      if (this.htmlScene.status !== 'native') return false;
+      if (!this.htmlScene.snapshotReady) { this.htmlScene.requestPaint(); return false; }
+    }
+    return true;
+  };
+
+  private render = (frame: FluidFrame) => {
+    if (this.destroyed) return;
+    if (this.htmlScene && !this.options.overlay && (this.htmlScene.status !== 'native' || !this.htmlScene.snapshotReady)) { this.htmlScene.requestPaint(); return; }
     if (this.initError) {
       console.error(this.initError);
       this.stop();
       return;
     }
     if (!this.initialized || !this.gpuDevice || !this.context || !this.surfaceFormat || !this.sampler || !this.sceneTexture || !this.sceneView || !this.paintA || !this.paintB || !this.lowPaint || !this.lowPipeline || !this.paintPipeline || !this.finalPipeline || !this.lowUniformBuffer || !this.paintUniformBuffer || !this.finalUniformBuffer) {
-      this.requestFrame();
       return;
     }
 
-    const dt = Math.min(32, now - this.last) / 16.666;
-    this.last = now;
+    const { now } = frame;
 
-    if (this.htmlScene) {
+    if (this.options.overlay) {
+      // The display shader produces a transparent layer without capturing DOM.
+    } else if (this.htmlScene) {
       if (this.htmlScene.needsUpload) {
         try {
           (this.gpuDevice.queue as HTMLGPUQueue).drawElementImageToTexture(
@@ -521,84 +534,61 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
       );
     }
 
-    const p = this.pointer;
-    const interacting = this.htmlScene?.interacting ?? false;
-    // Stop emitting strokes during interaction; existing ripples keep decaying.
-    if (interacting) { p.x = p.px = p.tx; p.y = p.py = p.ty; p.speed = 0; p.hasInput = false; }
-    p.x += (p.tx - p.x) * 0.55;
-    p.y += (p.ty - p.y) * 0.55;
-    const dx = (p.x - p.px) * this.dpr;
-    const dy = (p.y - p.py) * this.dpr;
-    const dist = Math.hypot(dx, dy);
-    p.speed = p.speed * 0.72 + dist * 0.28;
-    const radius = p.hasInput && dist > 0.18 ? Math.min(100, p.speed) : 0;
-    const sourceH = this.options.fullscreen ? window.innerHeight : this.canvas.getBoundingClientRect().height || this.canvas.clientHeight || 1;
-    const fx = p.px * this.dpr * this.options.paintScale;
-    const fy = (sourceH - p.py) * this.dpr * this.options.paintScale;
-    const tx = p.x * this.dpr * this.options.paintScale;
-    const ty = (sourceH - p.y) * this.dpr * this.options.paintScale;
-    const velScale = 0.0032 * dt;
-
     this.gpuDevice.queue.writeBuffer(this.lowUniformBuffer, 0, new Float32Array([1 / this.pw, 1 / this.ph, 0, 0]));
-    this.gpuDevice.queue.writeBuffer(this.paintUniformBuffer, 0, new Float32Array([
-      this.pw, this.ph, 0, 0,
-      fx, fy, radius, radius > 0 ? 1 : 0,
-      tx, ty, radius, radius > 0 ? 1 : 0,
-      radius > 0 ? dx * velScale : 0, radius > 0 ? -dy * velScale : 0, 0, 0,
-      this.options.velocityDissipation, this.options.weight1Dissipation, this.options.weight2Dissipation, 0,
-      this.options.pushStrength, this.options.curlScale, this.options.curlStrength, 0,
-    ]));
+    this.gpuDevice.queue.writeBuffer(this.paintUniformBuffer, 0, packStrokes(frame, this.options, this.dpr, this.pw, this.ph));
     this.gpuDevice.queue.writeBuffer(this.finalUniformBuffer, 0, new Float32Array([
       1 / this.pw, 1 / this.ph, now * 0.001, this.options.amount,
       this.options.rgbShift, this.options.multiplier, this.options.colorMultiplier, this.options.shade,
-      this.options.pastelFilm ? 1 : 0, 0, 0, 0,
+      this.options.pastelFilm ? 1 : 0, this.options.rainbow ? 1 : 0, this.options.blend, this.options.overlay ? 1 : 0,
+      ...this.options.color, 0,
     ]));
 
     const encoder = this.gpuDevice.createCommandEncoder();
+    if (frame.simulate) {
+      const lowBindGroup = this.gpuDevice.createBindGroup({
+        layout: this.lowPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.sampler },
+          { binding: 1, resource: this.paintA.view },
+          { binding: 2, resource: { buffer: this.lowUniformBuffer } },
+        ],
+      });
+      const lowPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: this.lowPaint.view,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+      lowPass.setPipeline(this.lowPipeline);
+      lowPass.setBindGroup(0, lowBindGroup);
+      lowPass.draw(3);
+      lowPass.end();
 
-    const lowBindGroup = this.gpuDevice.createBindGroup({
-      layout: this.lowPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.sampler },
-        { binding: 1, resource: this.paintA.view },
-        { binding: 2, resource: { buffer: this.lowUniformBuffer } },
-      ],
-    });
-    const lowPass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: this.lowPaint.view,
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        loadOp: 'clear',
-        storeOp: 'store',
-      }],
-    });
-    lowPass.setPipeline(this.lowPipeline);
-    lowPass.setBindGroup(0, lowBindGroup);
-    lowPass.draw(3);
-    lowPass.end();
-
-    const paintBindGroup = this.gpuDevice.createBindGroup({
-      layout: this.paintPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: this.sampler },
-        { binding: 1, resource: this.lowPaint.view },
-        { binding: 2, resource: this.paintA.view },
-        { binding: 3, resource: { buffer: this.paintUniformBuffer } },
-      ],
-    });
-    const paintPass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: this.paintB.view,
-        clearValue: { r: 0.5, g: 0.5, b: 0, a: 0 },
-        loadOp: 'clear',
-        storeOp: 'store',
-      }],
-    });
-    paintPass.setPipeline(this.paintPipeline);
-    paintPass.setBindGroup(0, paintBindGroup);
-    paintPass.draw(3);
-    paintPass.end();
-    [this.paintA, this.paintB] = [this.paintB, this.paintA];
+      const paintBindGroup = this.gpuDevice.createBindGroup({
+        layout: this.paintPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: this.sampler },
+          { binding: 1, resource: this.lowPaint.view },
+          { binding: 2, resource: this.paintA.view },
+          { binding: 3, resource: { buffer: this.paintUniformBuffer } },
+        ],
+      });
+      const paintPass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: this.paintB.view,
+          clearValue: { r: 0.5, g: 0.5, b: 0, a: 0 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+      paintPass.setPipeline(this.paintPipeline);
+      paintPass.setBindGroup(0, paintBindGroup);
+      paintPass.draw(3);
+      paintPass.end();
+      [this.paintA, this.paintB] = [this.paintB, this.paintA];
+    }
 
     const finalBindGroup = this.gpuDevice.createBindGroup({
       layout: this.finalPipeline.getBindGroupLayout(0),
@@ -612,7 +602,7 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     const finalPass = encoder.beginRenderPass({
       colorAttachments: [{
         view: this.context.getCurrentTexture().createView(),
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
         loadOp: 'clear',
         storeOp: 'store',
       }],
@@ -623,8 +613,6 @@ export class WebGPUFluidPrismBackend implements FluidPrismBackendController {
     finalPass.end();
 
     this.gpuDevice.queue.submit([encoder.finish()]);
-    p.px = p.x;
-    p.py = p.y;
-    this.requestFrame();
+    if (frame.simulate) this.htmlScene?.requestPaint();
   };
 }

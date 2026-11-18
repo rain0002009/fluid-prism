@@ -227,72 +227,79 @@ image.onload = async () => {
 
 ## React 用法
 
-与 shadcn 的源码使用方式类似，把下面的 `FluidPrism.tsx` 复制到项目，再从本地路径导入。npm 包提供框架无关的核心，不包含 React/Vue 组件或 shadcn registry。
+参考 [canvas-ui 的 Liquid.tsx](https://github.com/DavidHDev/canvas-ui/blob/main/src/lib/Liquid/Liquid.tsx) 的组件接口：通过 `children` 组合内容，效果参数直接作为 props，`className` / `style` 控制容器。将下面的 `FluidPrism.tsx` 复制到项目，从本地路径导入；npm 包提供框架无关的核心。
 
-封装将 `children` 作为 HTML 场景，支持 `className`、`style`、动态参数和后端切换。容器必须有明确高度，例如 `h-[480px]` 或 `style={{ height: 480 }}`。初始化只在客户端执行；降级时保留同一棵普通 DOM。
+canvas 由 React 声明，effect 负责创建、更新和销毁实例。容器需要明确高度；初始化在客户端执行，服务端输出普通 HTML 内容。
 
 ```tsx
 'use client';
 
 import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react';
-import { webgl, webgpu, type FluidPrism, type FluidPrismOptions } from 'fluid-prism';
+import { createFluidPrism, type FluidPrism as FluidPrismInstance, type FluidPrismOptions } from 'fluid-prism';
 
-type VisualOptions = Omit<FluidPrismOptions,
-  'backend' | 'container' | 'canvas' | 'htmlSource' | 'source' | 'contentRenderer' |
+type EffectProps = Omit<FluidPrismOptions,
+  'container' | 'canvas' | 'htmlSource' | 'source' | 'contentRenderer' |
   'fullscreen' | 'autoStart' | 'zIndex' | 'hideCursor' | 'backgroundColor'>;
 
-type Props = {
+export interface FluidPrismProps extends EffectProps {
   children: ReactNode;
   className?: string;
   style?: CSSProperties;
-  backend?: 'webgl' | 'webgpu';
-  options?: VisualOptions;
-};
+}
 
-const emptyOptions: VisualOptions = {};
-
-export function FluidPrismView({ children, className, style, backend = 'webgl', options = emptyOptions }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
+export function FluidPrism({ children, className, style, backend = 'webgl', ...options }: FluidPrismProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const effectRef = useRef<FluidPrism | null>(null);
-  const previousOptions = useRef<VisualOptions>({});
+  const instanceRef = useRef<FluidPrismInstance | null>(null);
+  const optionsRef = useRef<EffectProps>({});
+  const pendingRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
-    const host = hostRef.current;
+    const canvas = canvasRef.current;
     const content = contentRef.current;
-    if (!host || !content) return;
+    if (!canvas || !content) return;
 
-    // Switching rendering contexts requires a fresh canvas.
-    const canvas = document.createElement('canvas');
-    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;background:inherit';
-    host.appendChild(canvas);
-    const factory = backend === 'webgpu' ? webgpu : webgl;
-    const effect = factory.createFluidPrism({ canvas, htmlSource: content, fullscreen: false });
-    effectRef.current = effect;
-    previousOptions.current = {};
+    let disposed = false;
+    // 串行创建，确保旧异步任务清理后再接管同一棵内容 DOM。
+    pendingRef.current = pendingRef.current.then(async () => {
+      if (disposed) return;
+      const instance = await createFluidPrism({ backend, canvas, htmlSource: content, fullscreen: false });
+      if (disposed) {
+        instance.destroy();
+        return;
+      }
+      instance.update(optionsRef.current);
+      instanceRef.current = instance;
+    }).catch(console.error);
 
     return () => {
-      // Restore the content before removing its temporary canvas parent.
-      effect.destroy();
-      canvas.remove();
-      effectRef.current = null;
+      disposed = true;
+      instanceRef.current?.destroy();
+      instanceRef.current = null;
     };
   }, [backend]);
 
   useEffect(() => {
-    const reset = Object.fromEntries(Object.keys(previousOptions.current).map(key => [key, undefined]));
-    effectRef.current?.update({ ...reset, ...options });
-    previousOptions.current = { ...options };
-  }, [options, backend]);
+    const reset = Object.fromEntries(Object.keys(optionsRef.current).map(key => [key, undefined]));
+    optionsRef.current = { ...reset, ...options };
+    instanceRef.current?.update(optionsRef.current);
+  });
 
   return (
-    <div ref={hostRef} className={className} style={{ ...style, position: 'relative' }}>
-      <div ref={contentRef} style={{ width: '100%', height: '100%', overflow: 'auto', background: 'inherit' }}>
+    <div className={className} style={{ position: 'relative', ...style }}>
+      <div ref={contentRef} style={{ position: 'relative', zIndex: 1, width: '100%', height: '100%', overflow: 'auto', background: 'inherit' }}>
         {children}
       </div>
+      <canvas
+        key={backend}
+        ref={canvasRef}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', background: options.overlay ? 'transparent' : 'inherit', zIndex: options.overlay ? 2 : 0, pointerEvents: 'none' }}
+      />
     </div>
   );
 }
+
+export default FluidPrism;
 ```
 
 在页面中使用；可以将原生按钮、输入框替换为项目自己的 shadcn `Button`、`Input`。通过 Portal 渲染到场景根节点之外的弹层不会参与折射。
@@ -300,26 +307,25 @@ export function FluidPrismView({ children, className, style, backend = 'webgl', 
 ```tsx
 'use client';
 
-import { useMemo, useState } from 'react';
-import { FluidPrismView } from './components/FluidPrism';
+import { useState } from 'react';
+import FluidPrism from './components/FluidPrism';
 
 export function Hero() {
   const [amount, setAmount] = useState(3);
   const [name, setName] = useState('Prism');
-  const options = useMemo(() => ({ amount, pastelFilm: true }), [amount]);
 
   return (
     <>
       <label>折射强度 <input type="range" min="0" max="10" step="0.1"
         value={amount} onChange={event => setAmount(Number(event.target.value))} /></label>
-      <FluidPrismView options={options} style={{ height: 480, background: '#f4f1ec' }}>
+      <FluidPrism amount={amount} pastelFilm style={{ height: 480, background: '#f4f1ec' }}>
         <section style={{ padding: 32 }}>
           <h1>Hello, {name}</h1>
           <label>Name <input value={name} onChange={event => setName(event.target.value)} /></label>
           <button onClick={() => setName('Prism')}>Reset name</button>
           <p>这段文字可以选择和复制。</p>
         </section>
-      </FluidPrismView>
+      </FluidPrism>
     </>
   );
 }
@@ -327,63 +333,73 @@ export function Hero() {
 
 ## Vue 用法
 
-把下面的 `FluidPrism.vue` 复制到项目，通过默认 slot 放入 HTML 场景。`class` 和 `style` 自动落到外层容器，`options` 响应式更新效果；`backend` 变化时销毁旧实例并创建新 canvas。slot 始终只渲染一次，不用 `v-if` 在原生和降级之间重建表单。
+参考 [canvas-ui 的 Liquid.vue](https://github.com/DavidHDev/canvas-ui/blob/main/src/lib/Liquid/Liquid.vue)，把下面的 `FluidPrism.vue` 复制到项目，通过默认 slot 组合内容，效果参数直接作为 props。`class` / `style` 自动透传到外层容器；template 声明 canvas，生命周期负责管理实例。
 
 ```vue
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { webgl, webgpu, type FluidPrism, type FluidPrismOptions } from 'fluid-prism';
+import { createFluidPrism, type FluidPrism as FluidPrismInstance, type FluidPrismOptions } from 'fluid-prism';
 
-type VisualOptions = Omit<FluidPrismOptions,
-  'backend' | 'container' | 'canvas' | 'htmlSource' | 'source' | 'contentRenderer' |
+type EffectProps = Omit<FluidPrismOptions,
+  'container' | 'canvas' | 'htmlSource' | 'source' | 'contentRenderer' |
   'fullscreen' | 'autoStart' | 'zIndex' | 'hideCursor' | 'backgroundColor'>;
 
-const props = withDefaults(defineProps<{
-  backend?: 'webgl' | 'webgpu';
-  options?: VisualOptions;
-}>(), { backend: 'webgl', options: () => ({}) });
+const props = withDefaults(defineProps<EffectProps>(), {
+  backend: 'webgl',
+  autoSleep: undefined,
+  respectReducedMotion: undefined,
+  rainbow: undefined,
+  pastelFilm: undefined, // 缺省时沿用核心默认值，避免 Vue 将 Boolean prop 转成 false。
+});
 
-const hostRef = ref<HTMLDivElement | null>(null);
+const canvasRef = ref<HTMLCanvasElement | null>(null);
 const contentRef = ref<HTMLDivElement | null>(null);
-let effect: FluidPrism | null = null;
-let canvas: HTMLCanvasElement | null = null;
-let previousOptions: VisualOptions = {};
+let instance: FluidPrismInstance | null = null;
+let pending: Promise<void> = Promise.resolve();
+let generation = 0;
 
 function dispose() {
-  effect?.destroy();
-  effect = null;
-  canvas?.remove();
-  canvas = null;
+  generation++;
+  instance?.destroy();
+  instance = null;
 }
 
 function mount() {
   dispose();
-  if (!hostRef.value || !contentRef.value) return;
-  canvas = document.createElement('canvas');
-  canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;background:inherit';
-  hostRef.value.appendChild(canvas);
-  const factory = props.backend === 'webgpu' ? webgpu : webgl;
-  effect = factory.createFluidPrism({
-    ...props.options, canvas, htmlSource: contentRef.value, fullscreen: false,
-  });
-  previousOptions = { ...props.options };
+  const canvas = canvasRef.value;
+  const content = contentRef.value;
+  const backend = props.backend;
+  const current = generation;
+  if (!canvas || !content) return;
+  pending = pending.then(async () => {
+    if (current !== generation) return;
+    const next = await createFluidPrism({ backend, canvas, htmlSource: content, fullscreen: false });
+    if (current !== generation) {
+      next.destroy();
+      return;
+    }
+    next.update({ ...props });
+    instance = next;
+  }).catch(console.error);
 }
 
 onMounted(mount);
 onBeforeUnmount(dispose);
 watch(() => props.backend, mount, { flush: 'post' });
-watch(() => props.options, options => {
-  const reset = Object.fromEntries(Object.keys(previousOptions).map(key => [key, undefined]));
-  effect?.update({ ...reset, ...options });
-  previousOptions = { ...options };
-}, { deep: true, flush: 'post' });
+watch(() => ({ ...props }), options => instance?.update(options), { flush: 'post' });
 </script>
 
 <template>
-  <div ref="hostRef" style="position: relative">
-    <div ref="contentRef" style="width: 100%; height: 100%; overflow: auto; background: inherit">
+  <div style="position: relative">
+    <div ref="contentRef" style="position: relative; z-index: 1; width: 100%; height: 100%; overflow: auto; background: inherit">
       <slot />
     </div>
+    <canvas
+      :key="props.backend"
+      ref="canvasRef"
+      :style="{ background: props.overlay ? 'transparent' : 'inherit', zIndex: props.overlay ? 2 : 0 }"
+      style="position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none"
+    />
   </div>
 </template>
 ```
@@ -392,16 +408,16 @@ watch(() => props.options, options => {
 
 ```vue
 <script setup lang="ts">
-import { reactive, ref } from 'vue';
+import { ref } from 'vue';
 import FluidPrism from './components/FluidPrism.vue';
 
 const name = ref('Prism');
-const options = reactive({ amount: 3, pastelFilm: true });
+const amount = ref(3);
 </script>
 
 <template>
-  <label>折射强度 <input v-model.number="options.amount" type="range" min="0" max="10" step="0.1" /></label>
-  <FluidPrism :options="options" style="height: 480px; background: #f4f1ec">
+  <label>折射强度 <input v-model.number="amount" type="range" min="0" max="10" step="0.1" /></label>
+  <FluidPrism :amount="amount" pastel-film style="height: 480px; background: #f4f1ec">
     <section style="padding: 32px">
       <h1>Hello, {{ name }}</h1>
       <label>Name <input v-model="name" /></label>
@@ -412,9 +428,47 @@ const options = reactive({ amount: 3, pastelFilm: true });
 </template>
 ```
 
-两个封装使用同步返回实例的命名创建函数，立即注册清理逻辑，覆盖 React StrictMode、快速卸载和 WebGPU 尚未就绪的情况。WebGPU 异步初始化由核心处理；需要检查最终能力时，等待实例的 `ready`。`backend` 切换保留内容节点和表单值，当前焦点与选区可能因 DOM 移动而结束。
+两个封装统一调用 `await createFluidPrism({ backend, ... })`，由核心选择后端。效果 props 支持直接更新或移除，移除时恢复核心默认值；普通参数更新复用实例，`backend` 变化通过 canvas 的 `key` 更换上下文并重建实例。
 
-`options` 只放显示效果参数；移除参数恢复核心默认值。React 中替换 `options` 对象，Vue 中也可以修改响应式属性。请给容器设置不透明背景色；示例通过 `background: inherit` 将背景传给 canvas 和场景根节点，确保背景也进入纹理。原生模式会临时将场景移入 canvas，把继承样式放到外层容器，把依赖表单祖先或父选择器的内容放进场景子树。表单、选区和键盘行为遵循上文的交互策略。
+清理逻辑同步注册，异步创建串行执行：已卸载或已切换后端的任务会销毁迟到的实例，再开始下一次创建，避免争用内容 DOM。实例接管时应用最新 props，支持 React StrictMode、初始化期间参数变化及快速卸载。WebGPU 后端自身的初始化由实例的 `ready` 表示。
+
+这里沿用 Liquid 的组件接口和生命周期组织，渲染结构适配本项目的 `htmlSource` API：核心负责原生能力检测、场景移动和 DOM 降级，使用一个输出 canvas。`children` / slot 保留同一棵 DOM，切换后端保留表单值；焦点与选区可能因 DOM 移动而结束。
+
+请给容器设置不透明背景色；`background: inherit` 将背景传给 canvas 和场景根节点，确保背景进入纹理。原生模式会临时将场景移入 canvas，把继承样式放到外层容器，把依赖表单祖先或父选择器的内容放进场景子树。表单、选区和键盘行为遵循上文的交互策略。
+
+## 输入、休眠与透明叠加
+
+两个后端共用输入和调度逻辑，参考 [LiquidVanilla](https://github.com/DavidHDev/canvas-ui/blob/main/src/lib/Liquid/LiquidVanilla.ts) 的队列、可见性及减少动态效果处理，保留本项目的反馈式折射算法。
+
+- 默认启用 `autoSleep`：静态场景在波纹衰减后停止 RAF，指针、`splat()`、参数更新及原生 HTML 的 `paint` 会唤醒。canvas、视频和 `contentRenderer` 持续更新内容；`autoSleep: false` 保持连续模拟。任一衰减值设为 `1` 时，已产生的波纹不会按超时休眠。
+- 页面进入后台或 canvas 离开视口时暂停，恢复可见后继续；暂停时间不计入模拟。`stop()` 保持手动停止状态，`start()` 恢复；停止期间原生 HTML 仍可重绘。
+- 默认尊重 `prefers-reduced-motion`，不接受新扰动，已有波纹自然衰减。确有需要时可设置 `respectReducedMotion: false`。
+- 支持多指输入，仅接收 canvas 边界内的指针；`radius` 单位为 CSS 像素，`force` 控制冲量。任一设为 `0` 时禁用新扰动。HTML 控件、焦点及选区交互期间忽略新注入，已有波纹继续衰减。
+- 衰减参数表示每个 60Hz 基准帧的保留比例，实际按帧间时间换算；DPR 同时受设备、页面缩放、GPU 纹理尺寸和每张缓冲区约 1600 万像素预算限制。
+
+程序注入波纹：
+
+```ts
+const effect = await createFluidPrism({ radius: 32, force: 1.2 });
+effect.splat(0.5, 0.5, 60, -30);
+```
+
+`x/y` 是 `[0, 1]` 的归一化位置，原点在左上角；`dx/dy` 是 CSS 像素冲量，向右、向下为正。非法坐标或非有限数值会抛出 `RangeError`。队列最多保留最近 64 次注入，每帧最多处理 8 个输入，API 输入预留至少一个名额。初始化、手动停止及不可见期间可以排队，恢复后处理；减少动态效果或 HTML 交互期间忽略新注入。
+
+固定品牌色与透明叠加：
+
+```ts
+const effect = await createFluidPrism({
+  htmlSource: document.querySelector<HTMLElement>('#hero')!,
+  overlay: true,
+  rainbow: false,
+  color: [0.145, 0.239, 0.867], // sRGB，分量范围 [0, 1]
+  blend: 0.4,
+  zIndex: 1,
+});
+```
+
+`overlay: true` 输出透明流体色层，不采样或扭曲背景，HTML 保留原 DOM 父级，不需要原生 HTML-in-Canvas 能力。canvas 需要叠在内容上方，且背景透明、`pointer-events: none`；上述 React/Vue 封装已处理层级和背景。此模式的 `htmlSourceStatus` 为 `fallback`，表示 HTML 没有进入原生纹理，叠加效果仍然运行。`overlay: false` 保持原来的折射模式；`rainbow: false` 在该模式中使用线性空间混合品牌色。
 
 ## 配置项
 
@@ -430,6 +484,14 @@ const options = reactive({ amount: 3, pastelFilm: true });
 | `dpr` | `number` | `1.5` | 最大设备像素比。 |
 | `paintScale` | `number` | `0.25` | 绘制缓冲区缩放比例。 |
 | `lowScale` | `number` | `0.125` | 低分辨率反馈缓冲区缩放比例。 |
+| `radius` | `number` | `24` | 指针和 splat 半径，单位 CSS 像素；`0` 禁用新扰动。 |
+| `force` | `number` | `1` | 输入冲量倍数；`0` 禁用新扰动。 |
+| `autoSleep` | `boolean` | `true` | 静态场景在波纹衰减后休眠。 |
+| `respectReducedMotion` | `boolean` | `true` | 尊重系统减少动态效果偏好。 |
+| `color` | `[number, number, number]` | `[0.145, 0.239, 0.867]` | 固定品牌色，sRGB 分量 `[0, 1]`。 |
+| `rainbow` | `boolean` | `true` | 彩虹色彩；关闭后使用固定颜色。 |
+| `blend` | `number` | `0.15` | 染色/叠加透明度倍数，范围 `[0, 1]`。 |
+| `overlay` | `boolean` | `false` | 输出透明色层，HTML 保留在原 DOM。 |
 | `amount` | `number` | `3` | 位移强度。 |
 | `rgbShift` | `number` | `0.5` | RGB 干涉相位。 |
 | `multiplier` | `number` | `5` | 位移乘数。 |
@@ -456,6 +518,7 @@ await effect.ready;
 effect.htmlSourceStatus; // 'disabled' | 'native' | 'fallback'
 effect.start();
 effect.stop();
+effect.splat(0.5, 0.5, 60, -30); // 左上角原点，归一化位置 + CSS 像素冲量
 effect.update({ amount: 2.4 });
 effect.update({ amount: undefined }); // 恢复 amount 的默认值
 effect.resize();
@@ -482,7 +545,7 @@ pnpm dev
 
 打开终端显示的地址（默认 `http://localhost:5173/fluid-prism/`）。
 
-playground 的“效果设置”面板支持实时调整折射、色彩、流动、拖尾及画面精度：数字参数使用滑块，`pastelFilm` 使用开关。面板显示当前值，支持恢复默认；切换后端或场景保留设置。移动端默认折叠，点击面板标题展开。
+playground 的“效果设置”面板支持实时调整折射、品牌色、输入半径/力度、流动、拖尾及画面精度，提供彩虹、透明叠加、休眠和减少动态效果开关，并可点击按钮注入中心波纹。面板显示当前值，支持恢复默认；切换后端或场景保留设置。移动端默认折叠，点击面板标题展开。
 
 使用 `serve` 等普通静态服务器时，先构建，再托管生成的 `dist-playground` 目录：
 

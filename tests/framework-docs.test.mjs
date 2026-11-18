@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { createElement } from 'react';
 import { renderToString as renderReact } from 'react-dom/server';
 import { createSSRApp, h } from 'vue';
 import { renderToString as renderVue } from 'vue/server-renderer';
-import { compileScript, parse } from '@vue/compiler-sfc';
+import { compileScript, parse, registerTS } from '@vue/compiler-sfc';
+import ts from 'typescript';
 import { createServer } from 'vite';
 
 const root = resolve('.scratch/validation/framework-docs');
+registerTS(() => ts);
 let server;
 let browser;
 let origin;
@@ -21,12 +24,43 @@ before(async () => {
   const [reactWrapper, reactUsage] = snippets('## React 用法');
   const [vueWrapper, vueUsage] = snippets('## Vue 用法');
   const compileVue = (source, filename) => {
-    const { descriptor, errors } = parse(source, { filename });
+    const { descriptor, errors } = parse(source, { filename: resolve(root, filename) });
     assert.deepEqual(errors, []);
-    return compileScript(descriptor, { id: filename, inlineTemplate: true }).content;
+    return compileScript(descriptor, {
+      id: filename,
+      inlineTemplate: true,
+      fs: { fileExists: existsSync, readFile: path => readFileSync(path, 'utf8') },
+    }).content;
   };
   await mkdir(`${root}/components`, { recursive: true });
+  await writeFile(resolve(root, 'tsconfig.json'), JSON.stringify({
+    extends: resolve('tsconfig.json'),
+    compilerOptions: {
+      noEmit: true,
+      jsx: 'react-jsx',
+      paths: { 'fluid-prism': [resolve('src/index.ts')] },
+    },
+    include: ['components/*.tsx', 'ReactHero.tsx'],
+  }));
   await Promise.all([
+    writeFile(resolve(root, 'engine.ts'), `
+      export * from ${JSON.stringify(resolve('src/index.ts').replaceAll('\\', '/'))};
+      import { createFluidPrism as create } from ${JSON.stringify(resolve('src/index.ts').replaceAll('\\', '/'))};
+      export async function createFluidPrism(options) {
+        if (typeof window !== 'undefined' && window.holdPrismCreation) {
+          window.prismCreationStarted = true;
+          await new Promise(resolve => window.releasePrismCreation = resolve);
+        }
+        const instance = await create(options);
+        if (typeof window !== 'undefined') {
+          const record = { destroyed: false };
+          (window.prismCreations ??= []).push(record);
+          const destroy = instance.destroy.bind(instance);
+          instance.destroy = () => { record.destroyed = true; destroy(); };
+        }
+        return instance;
+      }
+    `),
     writeFile(`${root}/components/FluidPrism.tsx`, reactWrapper),
     writeFile(`${root}/ReactHero.tsx`, reactUsage),
     writeFile(`${root}/components/FluidPrism.vue.ts`, compileVue(vueWrapper, 'FluidPrism.vue')),
@@ -36,7 +70,7 @@ before(async () => {
     writeFile(`${root}/react.tsx`, `
       import { StrictMode, useState } from 'react';
       import { createRoot } from 'react-dom/client';
-      import { FluidPrismView } from './components/FluidPrism';
+      import FluidPrism from './components/FluidPrism';
       import { Hero } from './ReactHero';
       function App() {
         const [backend, setBackend] = useState(location.search.includes('webgpu') ? 'webgpu' : 'webgl');
@@ -44,15 +78,15 @@ before(async () => {
         const [visible, setVisible] = useState(true);
         const [name, setName] = useState('Prism');
         return <>
-          <button onClick={() => setBackend('webgpu')}>Switch backend</button>
+          <button onClick={() => setBackend(value => value === 'webgl' ? 'webgpu' : 'webgl')}>Switch backend</button>
           <button onClick={() => setOptions({})}>Reset precision</button>
           <button onClick={() => setVisible(false)}>Unmount</button>
-          {visible && <FluidPrismView backend={backend} options={options} style={{ width: 480, height: 320, background: 'rgb(240, 100, 80)' }}>
+          {visible && <FluidPrism backend={backend} {...options} style={{ width: 480, height: 320, background: 'rgb(240, 100, 80)' }}>
             <h1>Hello, {name}</h1>
             <label>Name <input value={name} onChange={e => setName(e.target.value)} /></label>
             {name !== 'Prism' && <button onClick={() => setName('Prism')}>Reset name</button>}
             <p>Select this text.</p>
-          </FluidPrismView>}
+          </FluidPrism>}
         </>;
       }
       createRoot(document.getElementById('app')).render(<StrictMode>{location.search.includes('usage') ? <Hero /> : <App />}</StrictMode>);
@@ -67,10 +101,10 @@ before(async () => {
         const visible = ref(true);
         const name = ref('Prism');
         return () => [
-          h('button', { onClick: () => backend.value = 'webgpu' }, 'Switch backend'),
+          h('button', { onClick: () => backend.value = backend.value === 'webgl' ? 'webgpu' : 'webgl' }, 'Switch backend'),
           h('button', { onClick: () => options.value = {} }, 'Reset precision'),
           h('button', { onClick: () => visible.value = false }, 'Unmount'),
-          visible.value && h(FluidPrism, { backend: backend.value, options: options.value, style: { width: '480px', height: '320px', background: 'rgb(240, 100, 80)' } }, {
+          visible.value && h(FluidPrism, { backend: backend.value, ...options.value, style: { width: '480px', height: '320px', background: 'rgb(240, 100, 80)' } }, {
             default: () => [
               h('h1', 'Hello, ' + name.value),
               h('label', ['Name ', h('input', { value: name.value, onInput: e => name.value = e.target.value })]),
@@ -86,7 +120,7 @@ before(async () => {
   server = await createServer({
     configFile: false,
     root,
-    resolve: { alias: { 'fluid-prism': resolve('src/index.ts') } },
+    resolve: { alias: { 'fluid-prism': resolve(root, 'engine.ts') } },
     esbuild: { jsx: 'automatic' },
     define: { __VUE_OPTIONS_API__: 'true', __VUE_PROD_DEVTOOLS__: 'false', __VUE_PROD_HYDRATION_MISMATCH_DETAILS__: 'false' },
     server: { host: '127.0.0.1', port: 0 },
@@ -105,14 +139,14 @@ for (const framework of ['react', 'vue']) {
   test(`${framework} README wrapper renders HTML on the server without browser globals`, async () => {
     let html;
     if (framework === 'react') {
-      const { FluidPrismView } = await server.ssrLoadModule('/components/FluidPrism.tsx');
-      html = renderReact(createElement(FluidPrismView, null, createElement('p', null, 'Server content')));
+      const { default: FluidPrism } = await server.ssrLoadModule('/components/FluidPrism.tsx');
+      html = renderReact(createElement(FluidPrism, null, createElement('p', null, 'Server content')));
     } else {
       const { default: FluidPrism } = await server.ssrLoadModule('/components/FluidPrism.vue.ts');
       html = await renderVue(createSSRApp({ render: () => h(FluidPrism, null, { default: () => h('p', 'Server content') }) }));
     }
     assert.match(html, /<p>Server content<\/p>/);
-    assert.doesNotMatch(html, /<canvas/);
+    assert.match(html, /<canvas/);
   });
 
   for (const native of [true, false]) {
@@ -168,6 +202,82 @@ for (const framework of ['react', 'vue']) {
       } finally { await page.close(); }
     });
   }
+
+  test(framework + ' wrapper applies latest props after generic creation resolves', async () => {
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.addInitScript(() => { window.holdPrismCreation = true; });
+    try {
+      await page.goto(origin + '/' + framework + '.html');
+      await page.waitForFunction(() => window.prismCreationStarted);
+      await page.getByRole('button', { name: 'Reset precision' }).click();
+      await page.getByRole('textbox', { name: 'Name' }).fill('Ada');
+      await page.evaluate(() => { window.holdPrismCreation = false; window.releasePrismCreation(); });
+      await page.waitForFunction(() => document.querySelector('canvas')?.width === 480);
+      assert.equal(await page.locator('h1').textContent(), 'Hello, Ada');
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  test(framework + ' wrapper destroys a generic instance returned after unmount', async () => {
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    await page.addInitScript(() => { window.holdPrismCreation = true; });
+    try {
+      await page.goto(origin + '/' + framework + '.html');
+      await page.waitForFunction(() => window.prismCreationStarted);
+      await page.getByRole('button', { name: 'Unmount' }).click();
+      await page.evaluate(() => { window.holdPrismCreation = false; window.releasePrismCreation(); });
+      await page.waitForFunction(() => window.prismCreations?.length === 1 && window.prismCreations[0].destroyed);
+      assert.equal(await page.locator('canvas, input').count(), 0);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
+
+  test(framework + ' wrapper preserves reparented content across keyed canvas replacements', async () => {
+    const page = await browser.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.message));
+    // Exercise DOM ownership independently of experimental native paint support.
+    await page.addInitScript(() => {
+      Object.defineProperties(HTMLCanvasElement.prototype, {
+        content: { get() { return this.getAttribute('content') ?? ''; }, configurable: true },
+        requestPaint: { value() {}, configurable: true },
+        updateElementGeometry: { value() {}, configurable: true },
+        clearElementGeometry: { value() {}, configurable: true },
+      });
+      WebGLRenderingContext.prototype.texElementSubImage2D = () => {};
+      GPUQueue.prototype.drawElementImageToTexture = () => {};
+    });
+    try {
+      await page.goto(origin + '/' + framework + '.html');
+      await page.waitForFunction(() => document.querySelector('input')?.closest('canvas'));
+      await page.evaluate(() => { window.originalInput = document.querySelector('input'); });
+      // The canvas paint APIs are stubbed, so dispatch DOM events without hit testing.
+      await page.locator('input').evaluate(input => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Ada');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await page.waitForFunction(() => document.querySelector('h1').textContent === 'Hello, Ada');
+      for (let index = 0; index < 2; index++) {
+        await page.evaluate(() => { window.previousCanvas = document.querySelector('canvas'); });
+        await page.getByRole('button', { name: 'Switch backend' }).click();
+        await page.waitForFunction(() => document.querySelector('canvas') !== window.previousCanvas);
+        assert.equal(await page.locator('input').count(), 1);
+        assert.equal(await page.locator('input').evaluate(input => input === window.originalInput), true);
+        assert.equal(await page.locator('input').inputValue(), 'Ada');
+      }
+      await page.waitForFunction(() => document.querySelector('input')?.closest('canvas') === document.querySelector('canvas'));
+      await page.getByRole('button', { name: 'Reset name', includeHidden: true }).evaluate(button => button.click());
+      await page.waitForFunction(() => document.querySelector('h1').textContent === 'Hello, Prism');
+      assert.equal(await page.getByRole('button', { name: 'Reset name', includeHidden: true }).count(), 0);
+      await page.getByRole('button', { name: 'Unmount' }).click();
+      assert.equal(await page.locator('canvas, input').count(), 0);
+      assert.deepEqual(errors, []);
+    } finally { await page.close(); }
+  });
 
   test(`${framework} README page example updates the HTML scene`, async () => {
     const page = await browser.newPage();
