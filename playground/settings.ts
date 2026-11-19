@@ -63,7 +63,7 @@ export function createSettingsPanel(onChange: (options: VisualSettings) => void)
   const panel = document.createElement('details');
   panel.id = 'visual-settings';
   panel.innerHTML = `
-    <summary><span>效果设置 <small>实时预览</small></span><span class="settings-chevron" aria-hidden="true">⌄</span></summary>
+    <summary><span>效果设置 <small>实时预览</small></span><svg class="settings-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg></summary>
     <div class="settings-body">
       <p class="settings-intro">拖动后立即生效，移动鼠标查看变化。</p>
       ${groups.map((group, index) => `
@@ -71,7 +71,7 @@ export function createSettingsPanel(onChange: (options: VisualSettings) => void)
           <legend>${group.title}</legend>
           ${group.controls.map(control => `
             <div class="setting-row">
-              <label for="setting-${control.key}">${control.label}<small>${control.hint}</small></label>
+              <label for="setting-${control.key}">${control.label}<code class="setting-key">${control.key}</code><small>${control.hint}</small></label>
               <output for="setting-${control.key}">${settings[control.key] === 'auto' ? '自动' : settings[control.key]}</output>
               <input id="setting-${control.key}" data-setting="${control.key}" type="range" min="${control.min}" max="${control.max}" step="${control.step}" value="${settings[control.key] === 'auto' ? 24 : settings[control.key]}" />
             </div>
@@ -79,15 +79,15 @@ export function createSettingsPanel(onChange: (options: VisualSettings) => void)
           ${index === 0 ? `
             ${toggles.map(({ key, label, hint }) => `
               <label class="switch-row" for="setting-${key}">
-                <span>${label}<small>${hint}</small></span>
+                <span>${label}<code class="setting-key">${key}</code><small>${hint}</small></span>
                 <input id="setting-${key}" data-toggle="${key}" type="checkbox" role="switch" ${settings[key] ? 'checked' : ''} />
                 <span class="switch-track" aria-hidden="true"></span>
               </label>
             `).join('')}
-            <label class="color-row" for="setting-color"><span>固定颜色<small>关闭“随流动变色”后生效</small></span><input id="setting-color" type="color" value="#253ddd" /></label>
+            <label class="color-row" for="setting-color"><span>固定颜色<code class="setting-key">color</code><small>关闭“随流动变色”后生效</small></span><input id="setting-color" type="color" value="#253ddd" /></label>
             <p class="settings-hint">扭曲、颜色搭配、色彩强度和淡彩薄膜仅在关闭“只叠加颜色”时生效；颜色搭配、色彩强度和淡彩薄膜还需开启“随流动变色”。</p>
           ` : ''}
-          ${index === 1 ? '<label class="switch-row" for="setting-autoRadius"><span>自动调整波纹宽度<small>移动越快，波纹越宽；关闭后使用固定半径</small></span><input id="setting-autoRadius" type="checkbox" role="switch" checked /><span class="switch-track" aria-hidden="true"></span></label>' : ''}
+          ${index === 1 ? '<label class="switch-row" for="setting-autoRadius"><span>自动调整波纹宽度<code class="setting-key">radius: \'auto\'</code><small>移动越快，波纹越宽；关闭后使用固定半径</small></span><input id="setting-autoRadius" type="checkbox" role="switch" checked /><span class="switch-track" aria-hidden="true"></span></label>' : ''}
           ${index === 2 ? '<p class="settings-hint">如果画面卡顿，可以调低这些数值。</p>' : ''}
         </fieldset>
       `).join('')}

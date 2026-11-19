@@ -31,33 +31,35 @@
     .scene-control select { padding: 9px; border: 1px solid #bac9d0; border-radius: 99px; background: #fff; }
     #startup-error { position: fixed; z-index: 10; inset: 20px 24px auto; max-width: 720px; padding: 18px 22px; border: 1px solid #b94c36; border-radius: 16px; background: #fff5ee; color: #692c20; line-height: 1.6; }
     #startup-error p { margin: 6px 0 0; }
-    #visual-settings { position: fixed; z-index: 5; top: 20px; right: 24px; width: 296px; max-height: calc(100dvh - 40px); overflow: auto; border: 1px solid #ffffffb0; border-radius: 20px; background: #f8faf9ed; color: #263f50; box-shadow: 0 16px 60px #30415420; backdrop-filter: blur(20px); font-size: 13px; }
-    #visual-settings summary { display: flex; justify-content: space-between; align-items: center; padding: 16px 18px; cursor: pointer; list-style: none; font-weight: 650; }
+    #visual-settings { --settings-max-height: calc(100dvh - 40px); position: fixed; z-index: 5; top: 20px; right: 24px; width: 296px; max-height: var(--settings-max-height); overflow: hidden; overflow: clip; border: 1px solid #ffffffb0; border-radius: 20px; background: #f8faf9ed; color: #263f50; box-shadow: 0 16px 60px #30415420; backdrop-filter: blur(20px); font-size: 13px; }
+    #visual-settings summary { display: flex; justify-content: space-between; align-items: center; gap: 12px; block-size: 56px; padding: 16px 18px; cursor: pointer; list-style: none; font-weight: 650; line-height: 20px; }
     #visual-settings summary::-webkit-details-marker { display: none; }
-    #visual-settings summary small { margin-left: 6px; font-size: 11px; color: #657a88; font-weight: 400; }
-    .settings-chevron { font-size: 18px; transition: transform .15s; }
+    #visual-settings summary > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
+    #visual-settings summary small { font-size: 11px; color: #657a88; font-weight: 400; }
+    .settings-chevron { display: block; flex: 0 0 16px; width: 16px; height: 16px; transition: transform .15s; }
     #visual-settings[open] .settings-chevron { transform: rotate(180deg); }
-    .settings-body { padding: 0 18px 18px; }
+    .settings-body { max-block-size: calc(var(--settings-max-height) - 58px); overflow-y: auto; overscroll-behavior-y: contain; scrollbar-width: thin; scrollbar-color: #aab8c0 transparent; scrollbar-gutter: stable; padding: 0 18px 18px; }
     .settings-intro, .settings-hint { margin: 0 0 16px; color: #657a88; font-size: 11px; line-height: 1.6; }
     .settings-body fieldset { min-width: 0; margin: 0; padding: 16px 0 8px; border: 0; border-top: 1px solid #263f501a; }
     .settings-body legend { padding: 0 8px 0 0; font-size: 12px; font-weight: 650; }
-    .setting-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 7px 12px; margin-bottom: 16px; }
-    .setting-row small, .switch-row small { display: block; margin-top: 2px; font: 10px/1.3 ui-monospace, monospace; color: #657a88; }
+    .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 7px 12px; margin-bottom: 18px; }
+    .setting-key { display: block; margin-block: 3px; font: 10px/1.5 ui-monospace, monospace; color: #315e80; overflow-wrap: anywhere; }
+    .setting-row small, .switch-row small { display: block; margin-top: 3px; font-size: 11px; line-height: 1.5; color: #657a88; }
     .setting-row output { font: 12px/1.4 ui-monospace, monospace; font-variant-numeric: tabular-nums; }
     .setting-row input[type="range"] { grid-column: 1 / -1; width: 100%; height: 18px; margin: 0; padding: 0; border: 0; accent-color: #315e80; background: transparent; cursor: pointer; }
-    .switch-row { position: relative; display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; cursor: pointer; }
-    .switch-row input { position: absolute; right: 0; width: 40px; height: 24px; margin: 0; opacity: 0; cursor: pointer; }
+    .switch-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 40px; gap: 14px; align-items: center; margin-bottom: 16px; cursor: pointer; }
+    .switch-row input { position: absolute; right: 0; top: 50%; transform: translateY(-50%); width: 40px; height: 24px; margin: 0; opacity: 0; cursor: pointer; }
     .switch-track { width: 40px; height: 24px; padding: 3px; border-radius: 99px; background: #aab8c0; transition: background .15s; pointer-events: none; }
     .switch-track::after { content: ''; display: block; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px #0002; transition: transform .15s; }
     .switch-row input:checked + .switch-track { background: #315e80; }
     .switch-row input:checked + .switch-track::after { transform: translateX(16px); }
     .switch-row input:focus-visible + .switch-track { outline: 3px solid #468bc2; outline-offset: 3px; }
-    .color-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-    .color-row small { display: block; margin-top: 3px; font-size: 10px; color: #657a88; }
+    .color-row { display: grid; grid-template-columns: minmax(0, 1fr) 44px; align-items: center; gap: 14px; margin-bottom: 16px; }
+    .color-row small { display: block; margin-top: 3px; font-size: 11px; line-height: 1.5; color: #657a88; }
     .color-row input { width: 44px; height: 32px; padding: 3px; cursor: pointer; }
     #reset-settings { width: 100%; font-size: 12px; }
     @media (min-width: 1000px) { #html-scene { padding-right: 350px; } }
-    @media (max-width: 999px) { #visual-settings { top: auto; bottom: 16px; left: 24px; right: 24px; width: auto; max-height: 55dvh; } }
+    @media (max-width: 999px) { #visual-settings { --settings-max-height: 55dvh; top: auto; bottom: 16px; left: 24px; right: 24px; width: auto; } }
     @media (max-width: 650px) { .cards { grid-template-columns: 1fr; } #html-scene { padding: 230px 24px 40px; } }
   </style>
 </head>
